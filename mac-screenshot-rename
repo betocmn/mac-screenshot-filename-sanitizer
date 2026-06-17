@@ -64,10 +64,10 @@ expand_leading_tilde() {
 
   path=$1
   case "$path" in
-    "~")
+    \~)
       printf '%s\n' "$HOME"
       ;;
-    "~/"*)
+    \~/*)
       printf '%s/%s\n' "$HOME" "${path#~/}"
       ;;
     *)
