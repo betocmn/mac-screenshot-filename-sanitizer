@@ -9,11 +9,14 @@ VERSION="0.1.0"
 LABEL="io.github.betocmn.mac-screenshot-filename-sanitizer"
 BINARY_NAME="mac-screenshot-filename-sanitizer"
 SCREENSHOT_XATTR="com.apple.metadata:kMDItemIsScreenCapture"
+LAUNCHD_SETTLE_SECONDS=2
 
 COMMAND=""
 DIR_OVERRIDE=""
 DRY_RUN=0
 INCLUDE_RECORDINGS=0
+SETTLE_SECONDS=0
+SETTLE_SECONDS_PROVIDED=0
 
 usage() {
   cat <<'EOF'
@@ -35,6 +38,7 @@ Global flags:
   --dir <path>             Override the detected screenshot folder
   --dry-run                Print intended renames without changing files (run only)
   --include-recordings     Also rename matching .mov/.mp4 screen recordings
+  --settle-seconds <n>     Wait before sweeping so screenshot metadata can settle
   -h, --help               Show this help
   --version                Show version
 EOF
@@ -218,6 +222,15 @@ lower_string() {
   printf '%s\n' "$output"
 }
 
+normalize_space_separators() {
+  local input
+
+  input=$1
+  input=${input//$'\302\240'/ }
+  input=${input//$'\342\200\257'/ }
+  printf '%s\n' "$input"
+}
+
 sanitize_base() {
   local input
   local lowered
@@ -227,7 +240,7 @@ sanitize_base() {
   local last_index
   local last_char
 
-  input=$1
+  input=$(normalize_space_separators "$1")
   lowered=$(lower_string "$input")
   output=
   index=0
@@ -499,6 +512,12 @@ run_sweep() {
   return "$failed"
 }
 
+settle_before_run() {
+  if [ "$SETTLE_SECONDS" -gt 0 ]; then
+    sleep "$SETTLE_SECONDS"
+  fi
+}
+
 xml_escape() {
   local input
   local output
@@ -542,6 +561,7 @@ write_plist() {
   local watch_dir
   local worker
   local log_file
+  local settle_seconds
   local escaped_watch_dir
   local escaped_worker
   local escaped_log_file
@@ -550,6 +570,10 @@ write_plist() {
   watch_dir=$2
   worker=$3
   log_file=$4
+  settle_seconds=$LAUNCHD_SETTLE_SECONDS
+  if [ "$SETTLE_SECONDS_PROVIDED" -eq 1 ]; then
+    settle_seconds=$SETTLE_SECONDS
+  fi
 
   escaped_watch_dir=$(xml_escape "$watch_dir")
   escaped_worker=$(xml_escape "$worker")
@@ -568,10 +592,14 @@ write_plist() {
     printf '%s\n' '    <string>run</string>'
     printf '%s\n' '    <string>--dir</string>'
     printf '    <string>%s</string>\n' "$escaped_watch_dir"
+    printf '%s\n' '    <string>--settle-seconds</string>'
+    printf '    <string>%s</string>\n' "$settle_seconds"
     if [ "$INCLUDE_RECORDINGS" -eq 1 ]; then
       printf '%s\n' '    <string>--include-recordings</string>'
     fi
     printf '%s\n' '  </array>'
+    printf '%s\n' '  <key>RunAtLoad</key>'
+    printf '%s\n' '  <true/>'
     printf '%s\n' '  <key>WatchPaths</key>'
     printf '%s\n' '  <array>'
     printf '    <string>%s</string>\n' "$escaped_watch_dir"
@@ -793,10 +821,13 @@ cmd_run() {
   local dir
 
   dir=$(selected_dir) || die "could not resolve screenshot folder"
+  settle_before_run
   run_sweep "$dir"
 }
 
 parse_args() {
+  local value
+
   while [ "$#" -gt 0 ]; do
     case "$1" in
       install | uninstall | status | run | help)
@@ -815,6 +846,18 @@ parse_args() {
         ;;
       --include-recordings)
         INCLUDE_RECORDINGS=1
+        ;;
+      --settle-seconds)
+        shift
+        [ "$#" -gt 0 ] || die "--settle-seconds requires a non-negative integer"
+        value=$1
+        case "$value" in
+          "" | *[!0-9]*)
+            die "--settle-seconds requires a non-negative integer"
+            ;;
+        esac
+        SETTLE_SECONDS=$value
+        SETTLE_SECONDS_PROVIDED=1
         ;;
       -h | --help)
         usage

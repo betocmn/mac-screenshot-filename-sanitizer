@@ -69,8 +69,10 @@ The plist uses launchd `WatchPaths` for the detected screenshot folder. Under th
 When the watched folder changes, launchd starts:
 
 ```sh
-mac-screenshot-filename-sanitizer run --dir "<detected-folder>"
+mac-screenshot-filename-sanitizer run --dir "<detected-folder>" --settle-seconds 2
 ```
+
+The short settle delay gives macOS time to finish attaching screenshot metadata before the worker checks the file. The worker also runs once when the LaunchAgent is loaded, so screenshots that already exist in the watched folder are reconciled after install.
 
 The worker reconciles the whole folder and exits. This is deliberate: launchd may coalesce or throttle bursts of folder events, so the worker is designed to be idempotent instead of handling one event at a time. Already-clean filenames are skipped, so the rename event itself becomes a harmless no-op on the next run.
 
@@ -101,11 +103,12 @@ Given a filename:
 2. Lowercase the extension.
 3. Lowercase the base.
 4. Replace spaces, dots, and underscores with hyphens.
-5. Drop characters outside `[a-z0-9-]`.
-6. Collapse repeated hyphens and trim leading or trailing hyphens.
-7. If the base becomes empty, use `screenshot`.
-8. On collision, append `-<unix-epoch>` before the extension.
-9. Never overwrite existing files.
+5. Treat common macOS Unicode spacing characters as spaces.
+6. Drop characters outside `[a-z0-9-]`.
+7. Collapse repeated hyphens and trim leading or trailing hyphens.
+8. If the base becomes empty, use `screenshot`.
+9. On collision, append `-<unix-epoch>` before the extension.
+10. Never overwrite existing files.
 
 Default allowed extensions:
 

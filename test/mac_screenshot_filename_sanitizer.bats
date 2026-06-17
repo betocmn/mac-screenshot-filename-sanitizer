@@ -10,6 +10,9 @@ setup() {
   SCREENSHOT_XATTR_FILES="$BATS_TEST_TMPDIR/xattr-files"
   : >"$SCREENSHOT_XATTR_FILES"
   export SCREENSHOT_XATTR_FILES
+  SLEEP_LOG="$BATS_TEST_TMPDIR/sleep-log"
+  : >"$SLEEP_LOG"
+  export SLEEP_LOG
 
   cat >"$MOCK_BIN/xattr" <<'EOF'
 #!/usr/bin/env bash
@@ -45,12 +48,17 @@ fi
 /bin/mv "$@"
 EOF
 
+  cat >"$MOCK_BIN/sleep" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${SLEEP_LOG:?}"
+EOF
+
   cat >"$MOCK_BIN/launchctl" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
 
-  chmod 0755 "$MOCK_BIN/xattr" "$MOCK_BIN/date" "$MOCK_BIN/mv" "$MOCK_BIN/launchctl"
+  chmod 0755 "$MOCK_BIN/xattr" "$MOCK_BIN/date" "$MOCK_BIN/mv" "$MOCK_BIN/sleep" "$MOCK_BIN/launchctl"
   PATH="$MOCK_BIN:$PATH"
   export PATH
 }
@@ -96,6 +104,18 @@ mark_screenshot() {
 
   [ "$status" -eq 0 ]
   [ -e "$WORK_DIR/screenshot-caf-2026.png" ]
+  [ ! -e "$file" ]
+}
+
+@test "treats macOS narrow no-break spaces as separators" {
+  file="$WORK_DIR/$(printf 'Screenshot 2026-06-17 at 11.31.53\342\200\257pm.png')"
+  touch "$file"
+  mark_screenshot "$file"
+
+  run "$SCRIPT" run --dir "$WORK_DIR"
+
+  [ "$status" -eq 0 ]
+  [ -e "$WORK_DIR/screenshot-2026-06-17-at-11-31-53-pm.png" ]
   [ ! -e "$file" ]
 }
 
@@ -175,6 +195,25 @@ mark_screenshot() {
   [ "$output" = "" ]
 }
 
+@test "settle delay waits before sweeping" {
+  file="$WORK_DIR/Screenshot 2026.png"
+  touch "$file"
+  mark_screenshot "$file"
+
+  run "$SCRIPT" run --settle-seconds 2 --dir "$WORK_DIR"
+
+  [ "$status" -eq 0 ]
+  [ -e "$WORK_DIR/screenshot-2026.png" ]
+  [ "$(cat "$SLEEP_LOG")" = "2" ]
+}
+
+@test "settle delay rejects non-integer values" {
+  run "$SCRIPT" run --settle-seconds soon --dir "$WORK_DIR"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--settle-seconds requires a non-negative integer"* ]]
+}
+
 @test "unsupported extensions are left untouched" {
   file="$WORK_DIR/Screenshot 2026-06-17 at 9.14.48 pm.txt"
   touch "$file"
@@ -201,7 +240,26 @@ mark_screenshot() {
   grep -F "<string>run</string>" "$plist"
   grep -F "<string>--dir</string>" "$plist"
   grep -F "<string>$WORK_DIR</string>" "$plist"
+  grep -F "<string>--settle-seconds</string>" "$plist"
+  grep -F "<string>2</string>" "$plist"
+  grep -F "<key>RunAtLoad</key>" "$plist"
+  grep -F "<true/>" "$plist"
   grep -F "<string>$log_file</string>" "$plist"
+}
+
+@test "generated plist respects custom settle delay" {
+  plist="$WORK_DIR/agent.plist"
+  worker="$WORK_DIR/mac-screenshot-filename-sanitizer"
+  log_file="$WORK_DIR/agent.log"
+
+  # shellcheck source=/dev/null
+  source "$SCRIPT"
+  SETTLE_SECONDS=5
+  SETTLE_SECONDS_PROVIDED=1
+  write_plist "$plist" "$WORK_DIR" "$worker" "$log_file"
+
+  grep -F "<string>--settle-seconds</string>" "$plist"
+  grep -F "<string>5</string>" "$plist"
 }
 
 @test "uninstall removes worker recorded in plist without matching prefix" {
