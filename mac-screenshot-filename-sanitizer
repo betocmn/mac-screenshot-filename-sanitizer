@@ -6,8 +6,8 @@ LC_ALL=C
 export LC_ALL
 
 VERSION="0.1.0"
-LABEL="io.github.betocmn.mac-screenshot-rename"
-BINARY_NAME="mac-screenshot-rename"
+LABEL="io.github.betocmn.mac-screenshot-filename-sanitizer"
+BINARY_NAME="mac-screenshot-filename-sanitizer"
 SCREENSHOT_XATTR="com.apple.metadata:kMDItemIsScreenCapture"
 
 COMMAND=""
@@ -17,13 +17,13 @@ INCLUDE_RECORDINGS=0
 
 usage() {
   cat <<'EOF'
-mac-screenshot-rename
+mac-screenshot-filename-sanitizer
 
 Rename real macOS screenshots to shell-safe filenames.
 
 Usage:
-  mac-screenshot-rename [global flags] <command>
-  mac-screenshot-rename <command> [global flags]
+  mac-screenshot-filename-sanitizer [global flags] <command>
+  mac-screenshot-filename-sanitizer <command> [global flags]
 
 Commands:
   install      Install the LaunchAgent watcher for the detected screenshot folder

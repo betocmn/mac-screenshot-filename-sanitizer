@@ -2,8 +2,8 @@
 
 set -u
 
-BINARY_NAME="mac-screenshot-rename"
-DEFAULT_URL="https://raw.githubusercontent.com/betocmn/mac-screenshot-filename-sanitizer/main/mac-screenshot-rename"
+BINARY_NAME="mac-screenshot-filename-sanitizer"
+DEFAULT_URL="https://raw.githubusercontent.com/betocmn/mac-screenshot-filename-sanitizer/main/mac-screenshot-filename-sanitizer"
 
 die() {
   printf 'error: %s\n' "$*" >&2

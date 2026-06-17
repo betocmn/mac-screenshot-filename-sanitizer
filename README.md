@@ -1,6 +1,6 @@
-# mac-screenshot-rename
+# mac-screenshot-filename-sanitizer
 
-`mac-screenshot-rename` is a small macOS command-line tool that renames screenshots to shell-safe, agent-friendly filenames.
+`mac-screenshot-filename-sanitizer` is a small macOS command-line tool that renames screenshots to shell-safe, agent-friendly filenames.
 
 macOS creates names like:
 
@@ -42,7 +42,7 @@ cd mac-screenshot-filename-sanitizer
 ./install.sh
 ```
 
-The installer copies `mac-screenshot-rename` to `$PREFIX/bin`, where `PREFIX` defaults to `$HOME/.local`, then registers the LaunchAgent.
+The installer copies `mac-screenshot-filename-sanitizer` to `$PREFIX/bin`, where `PREFIX` defaults to `$HOME/.local`, then registers the LaunchAgent.
 
 To choose another install prefix:
 
@@ -62,18 +62,18 @@ The tap formula is provided for a repository named `homebrew-tap`:
 
 ```sh
 brew tap betocmn/tap
-brew install mac-screenshot-rename
-mac-screenshot-rename install
+brew install mac-screenshot-filename-sanitizer
+mac-screenshot-filename-sanitizer install
 ```
 
 The formula intentionally does not use `brew services`. Homebrew services does not expose launchd `WatchPaths`, which this tool needs for an event-driven watcher.
 
 ## How The Watcher Works
 
-`mac-screenshot-rename install` writes a user LaunchAgent at:
+`mac-screenshot-filename-sanitizer install` writes a user LaunchAgent at:
 
 ```text
-~/Library/LaunchAgents/io.github.betocmn.mac-screenshot-rename.plist
+~/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist
 ```
 
 The plist uses launchd `WatchPaths` for the detected screenshot folder. Under the hood, launchd uses kqueue filesystem events. There is no polling loop and no resident worker process between screenshots.
@@ -81,7 +81,7 @@ The plist uses launchd `WatchPaths` for the detected screenshot folder. Under th
 When the watched folder changes, launchd starts:
 
 ```sh
-mac-screenshot-rename run --dir "<detected-folder>"
+mac-screenshot-filename-sanitizer run --dir "<detected-folder>"
 ```
 
 The worker reconciles the whole folder and exits. This is deliberate: launchd may coalesce or throttle bursts of folder events, so the worker is designed to be idempotent instead of handling one event at a time. Already-clean filenames are skipped, so the rename event itself becomes a harmless no-op on the next run.
@@ -89,10 +89,10 @@ The worker reconciles the whole folder and exits. This is deliberate: launchd ma
 If your screenshot location changes later, run:
 
 ```sh
-mac-screenshot-rename install
+mac-screenshot-filename-sanitizer install
 ```
 
-`mac-screenshot-rename status` warns when the detected folder no longer matches the folder baked into the installed LaunchAgent.
+`mac-screenshot-filename-sanitizer status` warns when the detected folder no longer matches the folder baked into the installed LaunchAgent.
 
 ## Desktop Tradeoff
 
@@ -141,7 +141,7 @@ ___ .png
 Screen recordings are out of scope by default. You can opt in with:
 
 ```sh
-mac-screenshot-rename run --include-recordings
+mac-screenshot-filename-sanitizer run --include-recordings
 ```
 
 When enabled, `.mov` and `.mp4` files are considered only if their names match the normal macOS screen recording date and time pattern.
@@ -151,19 +151,19 @@ When enabled, `.mov` and `.mp4` files are considered only if their names match t
 Run one sweep without changing anything:
 
 ```sh
-mac-screenshot-rename run --dry-run
+mac-screenshot-filename-sanitizer run --dry-run
 ```
 
 Run one sweep over a specific folder:
 
 ```sh
-mac-screenshot-rename run --dir "$HOME/Desktop"
+mac-screenshot-filename-sanitizer run --dir "$HOME/Desktop"
 ```
 
 Show watcher status:
 
 ```sh
-mac-screenshot-rename status
+mac-screenshot-filename-sanitizer status
 ```
 
 Status reports:
@@ -185,7 +185,7 @@ From a clone:
 Or directly:
 
 ```sh
-mac-screenshot-rename uninstall
+mac-screenshot-filename-sanitizer uninstall
 ```
 
 Uninstall unloads and removes the LaunchAgent and removes the installed worker from `$PREFIX/bin`. It does not modify macOS defaults and does not move, rename, or delete screenshot files.
@@ -197,7 +197,7 @@ Runtime dependencies are limited to macOS built-ins: Bash, `defaults`, `launchct
 Checks:
 
 ```sh
-shellcheck mac-screenshot-rename install.sh uninstall.sh
+shellcheck mac-screenshot-filename-sanitizer install.sh uninstall.sh
 bats test
 ```
 

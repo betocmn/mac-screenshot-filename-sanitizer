@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 setup() {
-  SCRIPT="$BATS_TEST_DIRNAME/../mac-screenshot-rename"
+  SCRIPT="$BATS_TEST_DIRNAME/../mac-screenshot-filename-sanitizer"
   WORK_DIR=$(mktemp -d "$BATS_TEST_TMPDIR/screens.XXXXXX")
   WORK_DIR=$(cd "$WORK_DIR" && pwd -P)
   MOCK_BIN="$BATS_TEST_TMPDIR/bin"
@@ -148,7 +148,7 @@ mark_screenshot() {
 
 @test "generated plist contains absolute watched path and worker arguments" {
   plist="$WORK_DIR/agent.plist"
-  worker="$WORK_DIR/mac-screenshot-rename"
+  worker="$WORK_DIR/mac-screenshot-filename-sanitizer"
   log_file="$WORK_DIR/agent.log"
 
   # shellcheck source=/dev/null

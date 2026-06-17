@@ -2,8 +2,8 @@
 
 set -u
 
-LABEL="io.github.betocmn.mac-screenshot-rename"
-BINARY_NAME="mac-screenshot-rename"
+LABEL="io.github.betocmn.mac-screenshot-filename-sanitizer"
+BINARY_NAME="mac-screenshot-filename-sanitizer"
 
 strip_trailing_slashes() {
   local path
