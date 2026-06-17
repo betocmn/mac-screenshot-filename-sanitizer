@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install test tools
+        run: brew install shellcheck bats-core
+
+      - name: Run ShellCheck
+        run: shellcheck mac-screenshot-rename install.sh uninstall.sh
+
+      - name: Run Bats
+        run: bats test
