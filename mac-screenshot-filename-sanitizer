@@ -33,7 +33,7 @@ Commands:
 
 Global flags:
   --dir <path>             Override the detected screenshot folder
-  --dry-run                Print intended renames without changing files
+  --dry-run                Print intended renames without changing files (run only)
   --include-recordings     Also rename matching .mov/.mp4 screen recordings
   -h, --help               Show this help
   --version                Show version
@@ -346,6 +346,7 @@ process_candidate() {
   local same_file_target
   local temp_target
   local temp_index
+  local collision_index
 
   path=$1
   action=$2
@@ -392,6 +393,11 @@ process_candidate() {
     else
       epoch=$(date +%s)
       collision_target=$dir/$clean_base-$epoch.$clean_ext
+      collision_index=0
+      while [ -e "$collision_target" ]; do
+        collision_index=$((collision_index + 1))
+        collision_target=$dir/$clean_base-$epoch-$collision_index.$clean_ext
+      done
       target=$collision_target
     fi
   fi
@@ -414,18 +420,18 @@ process_candidate() {
           temp_target=$dir/.$BINARY_NAME.$$.$temp_index.tmp
         done
 
-        mv "$path" "$temp_target" || return 1
+        mv "$path" "$temp_target" || return 2
         if ! mv -n "$temp_target" "$target"; then
           mv -n "$temp_target" "$path" >/dev/null 2>&1 || true
-          return 1
+          return 2
         fi
       else
-        mv -n "$path" "$target" || return 1
+        mv -n "$path" "$target" || return 2
       fi
 
       if [ -e "$path" ]; then
         printf 'skipped: target exists for %s\n' "$path" >&2
-        return 1
+        return 2
       fi
 
       printf '%s -> %s\n' "$path" "$target"
@@ -463,22 +469,34 @@ run_sweep() {
   local dir
   local path
   local count
+  local result
+  local failed
 
   dir=$1
   count=0
+  failed=0
 
   [ -d "$dir" ] || die "directory does not exist: $dir"
 
   for path in "$dir"/*; do
     [ -e "$path" ] || continue
-    if process_candidate "$path" rename; then
-      count=$((count + 1))
-    fi
+    process_candidate "$path" rename
+    result=$?
+    case "$result" in
+      0)
+        count=$((count + 1))
+        ;;
+      2)
+        failed=1
+        ;;
+    esac
   done
 
   if [ "$DRY_RUN" -eq 1 ] && [ "$count" -eq 0 ]; then
     info "No renames needed."
   fi
+
+  return "$failed"
 }
 
 xml_escape() {
@@ -567,34 +585,49 @@ write_plist() {
   } >"$plist"
 }
 
-read_plist_watch_path() {
+read_plist_array_first_string() {
   local plist
+  local key
   local line
-  local in_watch_paths
+  local in_array
   local value
 
   plist=$1
-  in_watch_paths=0
+  key=$2
+  in_array=0
 
   [ -f "$plist" ] || return 1
 
   while IFS= read -r line; do
     case "$line" in
-      *"<key>WatchPaths</key>"*)
-        in_watch_paths=1
+      *"<key>$key</key>"*)
+        in_array=1
         ;;
       *"<string>"*"</string>"*)
-        if [ "$in_watch_paths" -eq 1 ]; then
+        if [ "$in_array" -eq 1 ]; then
           value=${line#*<string>}
           value=${value%%</string>*}
           xml_unescape "$value"
           return 0
         fi
         ;;
+      *"</array>"*)
+        if [ "$in_array" -eq 1 ]; then
+          return 1
+        fi
+        ;;
     esac
   done <"$plist"
 
   return 1
+}
+
+read_plist_watch_path() {
+  read_plist_array_first_string "$1" "WatchPaths"
+}
+
+read_plist_worker_path() {
+  read_plist_array_first_string "$1" "ProgramArguments"
 }
 
 resolve_self_path() {
@@ -708,7 +741,11 @@ cmd_uninstall() {
   local worker
 
   plist=$(plist_path)
-  worker=$(installed_binary_path)
+  if worker=$(read_plist_worker_path "$plist"); then
+    :
+  else
+    worker=$(installed_binary_path)
+  fi
 
   unload_agent "$plist"
   rm -f "$plist" || die "could not remove $plist"
@@ -797,6 +834,14 @@ parse_args() {
 
 main() {
   parse_args "$@"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    case "$COMMAND" in
+      install | uninstall)
+        die "--dry-run is only supported by the run command"
+        ;;
+    esac
+  fi
 
   case "$COMMAND" in
     "" | help)

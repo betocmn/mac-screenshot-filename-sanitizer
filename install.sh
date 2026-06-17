@@ -51,6 +51,13 @@ main() {
   local source_file
   local tmp
   local url
+  local arg
+
+  for arg in "$@"; do
+    if [ "$arg" = "--dry-run" ]; then
+      die "--dry-run is only supported by mac-screenshot-filename-sanitizer run"
+    fi
+  done
 
   prefix=$(install_prefix)
   bin_dir=$prefix/bin

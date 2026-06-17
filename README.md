@@ -142,6 +142,8 @@ Run one sweep without changing anything:
 mac-screenshot-filename-sanitizer run --dry-run
 ```
 
+`--dry-run` is only supported by `run`; install and uninstall reject it before making changes.
+
 Run one sweep over a specific folder:
 
 ```sh

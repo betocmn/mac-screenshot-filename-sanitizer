@@ -36,7 +36,21 @@ else
 fi
 EOF
 
-  chmod 0755 "$MOCK_BIN/xattr" "$MOCK_BIN/date"
+  cat >"$MOCK_BIN/mv" <<'EOF'
+#!/usr/bin/env bash
+if [ "${FAIL_MV:-0}" = "1" ]; then
+  exit 1
+fi
+
+/bin/mv "$@"
+EOF
+
+  cat >"$MOCK_BIN/launchctl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+
+  chmod 0755 "$MOCK_BIN/xattr" "$MOCK_BIN/date" "$MOCK_BIN/mv" "$MOCK_BIN/launchctl"
   PATH="$MOCK_BIN:$PATH"
   export PATH
 }
@@ -97,6 +111,33 @@ mark_screenshot() {
   [ -e "$existing" ]
   [ -e "$WORK_DIR/screenshot-2026-1700000000.png" ]
   [ ! -e "$file" ]
+}
+
+@test "keeps probing when the epoch collision suffix already exists" {
+  file="$WORK_DIR/Screenshot 2026.png"
+  existing="$WORK_DIR/screenshot-2026.png"
+  epoch_existing="$WORK_DIR/screenshot-2026-1700000000.png"
+  touch "$file" "$existing" "$epoch_existing"
+  mark_screenshot "$file"
+
+  run "$SCRIPT" run --dir "$WORK_DIR"
+
+  [ "$status" -eq 0 ]
+  [ -e "$existing" ]
+  [ -e "$epoch_existing" ]
+  [ -e "$WORK_DIR/screenshot-2026-1700000000-1.png" ]
+  [ ! -e "$file" ]
+}
+
+@test "returns nonzero when a candidate rename fails" {
+  file="$WORK_DIR/Screenshot 2026.png"
+  touch "$file"
+  mark_screenshot "$file"
+
+  FAIL_MV=1 run "$SCRIPT" run --dir "$WORK_DIR"
+
+  [ "$status" -ne 0 ]
+  [ -e "$file" ]
 }
 
 @test "already clean screenshot names are no-ops" {
@@ -161,4 +202,34 @@ mark_screenshot() {
   grep -F "<string>--dir</string>" "$plist"
   grep -F "<string>$WORK_DIR</string>" "$plist"
   grep -F "<string>$log_file</string>" "$plist"
+}
+
+@test "uninstall removes worker recorded in plist without matching prefix" {
+  home="$WORK_DIR/home"
+  custom_prefix="$WORK_DIR/custom"
+  worker="$custom_prefix/bin/mac-screenshot-filename-sanitizer"
+  plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
+  mkdir -p "${worker%/*}" "${plist%/*}"
+  touch "$worker"
+  chmod 0755 "$worker"
+
+  # shellcheck source=/dev/null
+  source "$SCRIPT"
+  write_plist "$plist" "$WORK_DIR" "$worker" "$WORK_DIR/agent.log"
+
+  run env HOME="$home" "$SCRIPT" uninstall
+
+  [ "$status" -eq 0 ]
+  [ ! -e "$worker" ]
+  [ ! -e "$plist" ]
+}
+
+@test "dry-run is rejected for install and uninstall" {
+  run "$SCRIPT" install --dry-run --dir "$WORK_DIR"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--dry-run is only supported by the run command"* ]]
+
+  run "$SCRIPT" uninstall --dry-run
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--dry-run is only supported by the run command"* ]]
 }
