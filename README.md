@@ -1,0 +1,1 @@
+# mac-screenshot-filename-sanitizer
