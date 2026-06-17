@@ -47,7 +47,7 @@ The installer copies `mac-screenshot-filename-sanitizer` to `$PREFIX/bin`, where
 To choose another install prefix:
 
 ```sh
-PREFIX=/opt/homebrew ./install.sh
+PREFIX="$HOME/bin" ./install.sh
 ```
 
 You can install with a one-liner, but clone and read the script first if you can:
@@ -55,18 +55,6 @@ You can install with a one-liner, but clone and read the script first if you can
 ```sh
 curl -fsSL https://raw.githubusercontent.com/betocmn/mac-screenshot-filename-sanitizer/main/install.sh | bash
 ```
-
-## Homebrew
-
-The tap formula is provided for a repository named `homebrew-tap`:
-
-```sh
-brew tap betocmn/tap
-brew install mac-screenshot-filename-sanitizer
-mac-screenshot-filename-sanitizer install
-```
-
-The formula intentionally does not use `brew services`. Homebrew services does not expose launchd `WatchPaths`, which this tool needs for an event-driven watcher.
 
 ## How The Watcher Works
 
