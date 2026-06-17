@@ -167,6 +167,16 @@ Status reports:
 - a warning if those folders differ
 - how many verified screenshots currently have dirty names
 
+## Troubleshooting
+
+If `status` reports dirty screenshots but the LaunchAgent does not rename them, check the log:
+
+```sh
+tail -80 "$HOME/Library/Logs/io.github.betocmn.mac-screenshot-filename-sanitizer.log"
+```
+
+macOS can allow the item in Background Activity while still blocking background access to protected folders such as Desktop, Documents, or Downloads. In that case the log says the worker could not read the watched directory. Grant Full Disk Access to the background worker shown by macOS, or choose a screenshot folder outside the protected locations and reinstall the watcher for that folder.
+
 ## Uninstall
 
 From a clone:

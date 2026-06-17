@@ -48,6 +48,15 @@ fi
 /bin/mv "$@"
 EOF
 
+  cat >"$MOCK_BIN/find" <<'EOF'
+#!/usr/bin/env bash
+if [ "${FAIL_FIND:-0}" = "1" ]; then
+  exit 1
+fi
+
+/usr/bin/find "$@"
+EOF
+
   cat >"$MOCK_BIN/sleep" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${SLEEP_LOG:?}"
@@ -58,7 +67,7 @@ EOF
 exit 0
 EOF
 
-  chmod 0755 "$MOCK_BIN/xattr" "$MOCK_BIN/date" "$MOCK_BIN/mv" "$MOCK_BIN/sleep" "$MOCK_BIN/launchctl"
+  chmod 0755 "$MOCK_BIN/xattr" "$MOCK_BIN/date" "$MOCK_BIN/mv" "$MOCK_BIN/find" "$MOCK_BIN/sleep" "$MOCK_BIN/launchctl"
   PATH="$MOCK_BIN:$PATH"
   export PATH
 }
@@ -157,6 +166,19 @@ mark_screenshot() {
   FAIL_MV=1 run "$SCRIPT" run --dir "$WORK_DIR"
 
   [ "$status" -ne 0 ]
+  [ -e "$file" ]
+}
+
+@test "returns nonzero when the watched directory cannot be read" {
+  file="$WORK_DIR/Screenshot 2026.png"
+  touch "$file"
+  mark_screenshot "$file"
+
+  FAIL_FIND=1 run "$SCRIPT" run --dir "$WORK_DIR"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read directory: $WORK_DIR"* ]]
+  [[ "$output" == *"Full Disk Access"* ]]
   [ -e "$file" ]
 }
 
