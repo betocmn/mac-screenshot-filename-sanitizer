@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    env:
+      BATS_VERSION: "1.13.0"
+      SHELLCHECK_VERSION: "0.11.0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install test tools
+        run: |
+          set -eux
+
+          arch=$(uname -m)
+          case "$arch" in
+            arm64)
+              shellcheck_arch=aarch64
+              ;;
+            x86_64)
+              shellcheck_arch=x86_64
+              ;;
+            *)
+              echo "unsupported architecture: $arch" >&2
+              exit 1
+              ;;
+          esac
+
+          curl -fsSL \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.darwin.${shellcheck_arch}.tar.xz" \
+            -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          mkdir -p "$RUNNER_TEMP/shellcheck"
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP/shellcheck" --strip-components=1
+          echo "$RUNNER_TEMP/shellcheck" >> "$GITHUB_PATH"
+
+          git clone --depth 1 --branch "v${BATS_VERSION}" \
+            https://github.com/bats-core/bats-core.git \
+            "$RUNNER_TEMP/bats-core"
+          echo "$RUNNER_TEMP/bats-core/bin" >> "$GITHUB_PATH"
+
+      - name: Run ShellCheck
+        run: shellcheck mac-screenshot-filename-sanitizer install.sh uninstall.sh
+
+      - name: Run Bats
+        run: bats test

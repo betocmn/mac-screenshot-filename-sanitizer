@@ -1,0 +1,870 @@
+#!/usr/bin/env bash
+
+set -u
+
+LC_ALL=C
+export LC_ALL
+
+VERSION="0.1.0"
+LABEL="io.github.betocmn.mac-screenshot-filename-sanitizer"
+BINARY_NAME="mac-screenshot-filename-sanitizer"
+SCREENSHOT_XATTR="com.apple.metadata:kMDItemIsScreenCapture"
+
+COMMAND=""
+DIR_OVERRIDE=""
+DRY_RUN=0
+INCLUDE_RECORDINGS=0
+
+usage() {
+  cat <<'EOF'
+mac-screenshot-filename-sanitizer
+
+Rename real macOS screenshots to shell-safe filenames.
+
+Usage:
+  mac-screenshot-filename-sanitizer [global flags] <command>
+  mac-screenshot-filename-sanitizer <command> [global flags]
+
+Commands:
+  install      Install the LaunchAgent watcher for the detected screenshot folder
+  uninstall    Unload and remove the LaunchAgent and installed worker
+  status       Show watcher status and dirty screenshot count
+  run          Run one sanitization sweep
+
+Global flags:
+  --dir <path>             Override the detected screenshot folder
+  --dry-run                Print intended renames without changing files (run only)
+  --include-recordings     Also rename matching .mov/.mp4 screen recordings
+  -h, --help               Show this help
+  --version                Show version
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+info() {
+  printf '%s\n' "$*"
+}
+
+strip_trailing_slashes() {
+  local path
+
+  path=$1
+  while [ "${#path}" -gt 1 ] && [ "${path%/}" != "$path" ]; do
+    path=${path%/}
+  done
+  printf '%s\n' "$path"
+}
+
+expand_leading_tilde() {
+  local path
+
+  path=$1
+  case "$path" in
+    \~)
+      printf '%s\n' "$HOME"
+      ;;
+    \~/*)
+      printf '%s/%s\n' "$HOME" "${path#~/}"
+      ;;
+    *)
+      printf '%s\n' "$path"
+      ;;
+  esac
+}
+
+absolute_path() {
+  local path
+  local dir
+  local base
+  local current_dir
+
+  path=$(expand_leading_tilde "$1")
+  path=$(strip_trailing_slashes "$path")
+
+  if [ -d "$path" ]; then
+    (cd "$path" 2>/dev/null && pwd -P) || return 1
+    return 0
+  fi
+
+  case "$path" in
+    /*)
+      printf '%s\n' "$path"
+      ;;
+    *)
+      current_dir=$(pwd -P) || return 1
+      printf '%s/%s\n' "$current_dir" "$path"
+      ;;
+  esac
+}
+
+absolute_file_path() {
+  local path
+  local dir
+  local base
+
+  path=$(expand_leading_tilde "$1")
+  case "$path" in
+    */*)
+      dir=${path%/*}
+      base=${path##*/}
+      ;;
+    *)
+      dir=.
+      base=$path
+      ;;
+  esac
+
+  dir=$(absolute_path "$dir") || return 1
+  printf '%s/%s\n' "$dir" "$base"
+}
+
+detect_screenshot_dir() {
+  local loc
+
+  loc=$(defaults read com.apple.screencapture location 2>/dev/null || true)
+  if [ -z "$loc" ]; then
+    loc=$HOME/Desktop
+  fi
+
+  absolute_path "$loc"
+}
+
+selected_dir() {
+  if [ -n "$DIR_OVERRIDE" ]; then
+    absolute_path "$DIR_OVERRIDE"
+  else
+    detect_screenshot_dir
+  fi
+}
+
+launch_agents_dir() {
+  printf '%s/Library/LaunchAgents\n' "$HOME"
+}
+
+logs_dir() {
+  printf '%s/Library/Logs\n' "$HOME"
+}
+
+plist_path() {
+  printf '%s/%s.plist\n' "$(launch_agents_dir)" "$LABEL"
+}
+
+log_path() {
+  printf '%s/%s.log\n' "$(logs_dir)" "$LABEL"
+}
+
+install_prefix() {
+  local prefix
+
+  prefix=${PREFIX:-$HOME/.local}
+  strip_trailing_slashes "$prefix"
+}
+
+installed_binary_path() {
+  printf '%s/bin/%s\n' "$(install_prefix)" "$BINARY_NAME"
+}
+
+lower_char() {
+  case "$1" in
+    A) printf 'a' ;;
+    B) printf 'b' ;;
+    C) printf 'c' ;;
+    D) printf 'd' ;;
+    E) printf 'e' ;;
+    F) printf 'f' ;;
+    G) printf 'g' ;;
+    H) printf 'h' ;;
+    I) printf 'i' ;;
+    J) printf 'j' ;;
+    K) printf 'k' ;;
+    L) printf 'l' ;;
+    M) printf 'm' ;;
+    N) printf 'n' ;;
+    O) printf 'o' ;;
+    P) printf 'p' ;;
+    Q) printf 'q' ;;
+    R) printf 'r' ;;
+    S) printf 's' ;;
+    T) printf 't' ;;
+    U) printf 'u' ;;
+    V) printf 'v' ;;
+    W) printf 'w' ;;
+    X) printf 'x' ;;
+    Y) printf 'y' ;;
+    Z) printf 'z' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+lower_string() {
+  local input
+  local output
+  local index
+  local char
+
+  input=$1
+  output=
+  index=0
+  while [ "$index" -lt "${#input}" ]; do
+    char=${input:$index:1}
+    output=$output$(lower_char "$char")
+    index=$((index + 1))
+  done
+
+  printf '%s\n' "$output"
+}
+
+sanitize_base() {
+  local input
+  local lowered
+  local output
+  local index
+  local char
+  local last_index
+  local last_char
+
+  input=$1
+  lowered=$(lower_string "$input")
+  output=
+  index=0
+
+  while [ "$index" -lt "${#lowered}" ]; do
+    char=${lowered:$index:1}
+    case "$char" in
+      " " | "." | "_")
+        char=-
+        ;;
+      [a-z0-9-])
+        ;;
+      *)
+        char=
+        ;;
+    esac
+
+    if [ "$char" = "-" ]; then
+      if [ -n "$output" ]; then
+        last_index=$((${#output} - 1))
+        last_char=${output:$last_index:1}
+        if [ "$last_char" != "-" ]; then
+          output=$output-
+        fi
+      fi
+    elif [ -n "$char" ]; then
+      output=$output$char
+    fi
+
+    index=$((index + 1))
+  done
+
+  while [ -n "$output" ]; do
+    last_index=$((${#output} - 1))
+    last_char=${output:$last_index:1}
+    if [ "$last_char" != "-" ]; then
+      break
+    fi
+    output=${output:0:$last_index}
+  done
+
+  if [ -z "$output" ]; then
+    output=screenshot
+  fi
+
+  printf '%s\n' "$output"
+}
+
+is_screenshot_extension() {
+  case "$1" in
+    png | jpg | jpeg | gif | heic | tiff | bmp | pdf)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+is_recording_extension() {
+  case "$1" in
+    mov | mp4)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+recording_name_matches() {
+  local base
+
+  base=$(lower_string "$1")
+  case "$base" in
+    screen\ recording\ *[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*[0-9].[0-9][0-9].[0-9][0-9]*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+has_screenshot_xattr() {
+  xattr -p "$SCREENSHOT_XATTR" "$1" >/dev/null 2>&1
+}
+
+sanitized_name_for() {
+  local name
+  local base
+  local ext
+  local clean_base
+  local clean_ext
+
+  name=$1
+  if [ "${name##*.}" = "$name" ]; then
+    return 1
+  fi
+
+  base=${name%.*}
+  ext=${name##*.}
+  clean_base=$(sanitize_base "$base")
+  clean_ext=$(lower_string "$ext")
+  printf '%s.%s\n' "$clean_base" "$clean_ext"
+}
+
+process_candidate() {
+  local path
+  local action
+  local dir
+  local name
+  local base
+  local ext
+  local clean_ext
+  local clean_name
+  local clean_base
+  local target
+  local collision_target
+  local epoch
+  local is_recording
+  local same_file_target
+  local temp_target
+  local temp_index
+  local collision_index
+
+  path=$1
+  action=$2
+  dir=${path%/*}
+  name=${path##*/}
+  is_recording=0
+  same_file_target=0
+
+  case "$name" in
+    .* | "")
+      return 1
+      ;;
+  esac
+
+  [ -f "$path" ] || return 1
+  [ "${name##*.}" != "$name" ] || return 1
+
+  base=${name%.*}
+  ext=${name##*.}
+  clean_ext=$(lower_string "$ext")
+
+  if is_screenshot_extension "$clean_ext"; then
+    :
+  elif [ "$INCLUDE_RECORDINGS" -eq 1 ] && is_recording_extension "$clean_ext" && recording_name_matches "$base"; then
+    is_recording=1
+  else
+    return 1
+  fi
+
+  clean_name=$(sanitized_name_for "$name") || return 1
+  if [ "$name" = "$clean_name" ]; then
+    return 1
+  fi
+
+  if [ "$is_recording" -eq 0 ] && ! has_screenshot_xattr "$path"; then
+    return 1
+  fi
+
+  clean_base=${clean_name%.*}
+  target=$dir/$clean_name
+  if [ -e "$target" ]; then
+    if [ "$path" -ef "$target" ]; then
+      same_file_target=1
+    else
+      epoch=$(date +%s)
+      collision_target=$dir/$clean_base-$epoch.$clean_ext
+      collision_index=0
+      while [ -e "$collision_target" ]; do
+        collision_index=$((collision_index + 1))
+        collision_target=$dir/$clean_base-$epoch-$collision_index.$clean_ext
+      done
+      target=$collision_target
+    fi
+  fi
+
+  case "$action" in
+    count)
+      return 0
+      ;;
+    rename)
+      if [ "$DRY_RUN" -eq 1 ]; then
+        printf '%s -> %s\n' "$path" "$target"
+        return 0
+      fi
+
+      if [ "$same_file_target" -eq 1 ]; then
+        temp_index=0
+        temp_target=$dir/.$BINARY_NAME.$$.tmp
+        while [ -e "$temp_target" ]; do
+          temp_index=$((temp_index + 1))
+          temp_target=$dir/.$BINARY_NAME.$$.$temp_index.tmp
+        done
+
+        mv "$path" "$temp_target" || return 2
+        if ! mv -n "$temp_target" "$target"; then
+          mv -n "$temp_target" "$path" >/dev/null 2>&1 || true
+          return 2
+        fi
+      else
+        mv -n "$path" "$target" || return 2
+      fi
+
+      if [ -e "$path" ]; then
+        printf 'skipped: target exists for %s\n' "$path" >&2
+        return 2
+      fi
+
+      printf '%s -> %s\n' "$path" "$target"
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+count_dirty_screenshots() {
+  local dir
+  local path
+  local count
+
+  dir=$1
+  count=0
+
+  [ -d "$dir" ] || {
+    printf '0\n'
+    return 0
+  }
+
+  for path in "$dir"/*; do
+    [ -e "$path" ] || continue
+    if process_candidate "$path" count; then
+      count=$((count + 1))
+    fi
+  done
+
+  printf '%s\n' "$count"
+}
+
+run_sweep() {
+  local dir
+  local path
+  local count
+  local result
+  local failed
+
+  dir=$1
+  count=0
+  failed=0
+
+  [ -d "$dir" ] || die "directory does not exist: $dir"
+
+  for path in "$dir"/*; do
+    [ -e "$path" ] || continue
+    process_candidate "$path" rename
+    result=$?
+    case "$result" in
+      0)
+        count=$((count + 1))
+        ;;
+      2)
+        failed=1
+        ;;
+    esac
+  done
+
+  if [ "$DRY_RUN" -eq 1 ] && [ "$count" -eq 0 ]; then
+    info "No renames needed."
+  fi
+
+  return "$failed"
+}
+
+xml_escape() {
+  local input
+  local output
+  local index
+  local char
+
+  input=$1
+  output=
+  index=0
+
+  while [ "$index" -lt "${#input}" ]; do
+    char=${input:$index:1}
+    case "$char" in
+      "&") output=$output'&amp;' ;;
+      "<") output=$output'&lt;' ;;
+      ">") output=$output'&gt;' ;;
+      '"') output=$output'&quot;' ;;
+      "'") output=$output'&apos;' ;;
+      *) output=$output$char ;;
+    esac
+    index=$((index + 1))
+  done
+
+  printf '%s\n' "$output"
+}
+
+xml_unescape() {
+  local input
+
+  input=$1
+  input=${input//&apos;/"'"}
+  input=${input//&quot;/\"}
+  input=${input//&gt;/>}
+  input=${input//&lt;/<}
+  input=${input//&amp;/&}
+  printf '%s\n' "$input"
+}
+
+write_plist() {
+  local plist
+  local watch_dir
+  local worker
+  local log_file
+  local escaped_watch_dir
+  local escaped_worker
+  local escaped_log_file
+
+  plist=$1
+  watch_dir=$2
+  worker=$3
+  log_file=$4
+
+  escaped_watch_dir=$(xml_escape "$watch_dir")
+  escaped_worker=$(xml_escape "$worker")
+  escaped_log_file=$(xml_escape "$log_file")
+
+  {
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+    printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+    printf '%s\n' '<plist version="1.0">'
+    printf '%s\n' '<dict>'
+    printf '%s\n' '  <key>Label</key>'
+    printf '  <string>%s</string>\n' "$LABEL"
+    printf '%s\n' '  <key>ProgramArguments</key>'
+    printf '%s\n' '  <array>'
+    printf '    <string>%s</string>\n' "$escaped_worker"
+    printf '%s\n' '    <string>run</string>'
+    printf '%s\n' '    <string>--dir</string>'
+    printf '    <string>%s</string>\n' "$escaped_watch_dir"
+    if [ "$INCLUDE_RECORDINGS" -eq 1 ]; then
+      printf '%s\n' '    <string>--include-recordings</string>'
+    fi
+    printf '%s\n' '  </array>'
+    printf '%s\n' '  <key>WatchPaths</key>'
+    printf '%s\n' '  <array>'
+    printf '    <string>%s</string>\n' "$escaped_watch_dir"
+    printf '%s\n' '  </array>'
+    printf '%s\n' '  <key>StandardOutPath</key>'
+    printf '  <string>%s</string>\n' "$escaped_log_file"
+    printf '%s\n' '  <key>StandardErrorPath</key>'
+    printf '  <string>%s</string>\n' "$escaped_log_file"
+    printf '%s\n' '</dict>'
+    printf '%s\n' '</plist>'
+  } >"$plist"
+}
+
+read_plist_array_first_string() {
+  local plist
+  local key
+  local line
+  local in_array
+  local value
+
+  plist=$1
+  key=$2
+  in_array=0
+
+  [ -f "$plist" ] || return 1
+
+  while IFS= read -r line; do
+    case "$line" in
+      *"<key>$key</key>"*)
+        in_array=1
+        ;;
+      *"<string>"*"</string>"*)
+        if [ "$in_array" -eq 1 ]; then
+          value=${line#*<string>}
+          value=${value%%</string>*}
+          xml_unescape "$value"
+          return 0
+        fi
+        ;;
+      *"</array>"*)
+        if [ "$in_array" -eq 1 ]; then
+          return 1
+        fi
+        ;;
+    esac
+  done <"$plist"
+
+  return 1
+}
+
+read_plist_watch_path() {
+  read_plist_array_first_string "$1" "WatchPaths"
+}
+
+read_plist_worker_path() {
+  read_plist_array_first_string "$1" "ProgramArguments"
+}
+
+resolve_self_path() {
+  local script_path
+
+  case "$0" in
+    */*)
+      script_path=$0
+      ;;
+    *)
+      script_path=$(command -v "$0" 2>/dev/null || true)
+      if [ -z "$script_path" ]; then
+        script_path=$(command -v "$BINARY_NAME" 2>/dev/null || true)
+      fi
+      ;;
+  esac
+
+  [ -n "$script_path" ] || return 1
+  absolute_file_path "$script_path"
+}
+
+ensure_installed_binary() {
+  local target
+  local target_dir
+  local self
+  local self_abs
+  local target_abs
+  local tmp
+
+  target=$(installed_binary_path)
+  target_dir=${target%/*}
+  self=$(resolve_self_path) || die "could not resolve script path"
+
+  mkdir -p "$target_dir" || die "could not create $target_dir"
+
+  self_abs=$(absolute_file_path "$self") || die "could not resolve $self"
+  target_abs=$(absolute_file_path "$target") || die "could not resolve $target"
+
+  if [ "$self_abs" != "$target_abs" ]; then
+    tmp=$target.$$
+    cp "$self" "$tmp" || die "could not copy worker to $tmp"
+    chmod 0755 "$tmp" || die "could not chmod $tmp"
+    mv -f "$tmp" "$target" || die "could not install worker to $target"
+  else
+    chmod 0755 "$target" || die "could not chmod $target"
+  fi
+
+  printf '%s\n' "$target"
+}
+
+load_agent() {
+  local plist
+  local domain
+
+  plist=$1
+  domain=gui/$(id -u)
+
+  launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || launchctl unload "$plist" >/dev/null 2>&1 || true
+  if launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  launchctl load "$plist"
+}
+
+unload_agent() {
+  local plist
+  local domain
+
+  plist=$1
+  domain=gui/$(id -u)
+
+  launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || launchctl unload "$plist" >/dev/null 2>&1 || true
+}
+
+agent_loaded() {
+  local domain
+
+  domain=gui/$(id -u)
+  launchctl print "$domain/$LABEL" >/dev/null 2>&1 || launchctl list "$LABEL" >/dev/null 2>&1
+}
+
+cmd_install() {
+  local dir
+  local plist
+  local worker
+  local log_file
+
+  dir=$(selected_dir) || die "could not resolve screenshot folder"
+  [ -d "$dir" ] || die "screenshot folder does not exist: $dir"
+
+  mkdir -p "$(launch_agents_dir)" || die "could not create LaunchAgents directory"
+  mkdir -p "$(logs_dir)" || die "could not create Logs directory"
+
+  worker=$(ensure_installed_binary)
+  plist=$(plist_path)
+  log_file=$(log_path)
+
+  write_plist "$plist" "$dir" "$worker" "$log_file"
+  load_agent "$plist" || die "could not load LaunchAgent"
+
+  info "Installed $LABEL"
+  info "Watching: $dir"
+  info "Worker: $worker"
+  info "Log: $log_file"
+  info "No macOS screenshot settings were changed."
+}
+
+cmd_uninstall() {
+  local plist
+  local worker
+
+  plist=$(plist_path)
+  if worker=$(read_plist_worker_path "$plist"); then
+    :
+  else
+    worker=$(installed_binary_path)
+  fi
+
+  unload_agent "$plist"
+  rm -f "$plist" || die "could not remove $plist"
+  rm -f "$worker" || die "could not remove $worker"
+
+  info "Uninstalled $LABEL"
+  info "No macOS screenshot settings or screenshot files were changed."
+}
+
+cmd_status() {
+  local detected
+  local plist
+  local watched
+  local loaded
+  local dirty_count
+
+  detected=$(selected_dir) || die "could not resolve screenshot folder"
+  plist=$(plist_path)
+  watched="not installed"
+  loaded=no
+
+  if watched=$(read_plist_watch_path "$plist"); then
+    :
+  else
+    watched="not installed"
+  fi
+
+  if agent_loaded; then
+    loaded=yes
+  fi
+
+  dirty_count=$(count_dirty_screenshots "$detected")
+
+  info "Detected screenshot folder: $detected"
+  info "LaunchAgent watched folder: $watched"
+  info "LaunchAgent loaded: $loaded"
+  info "Dirty screenshots in detected folder: $dirty_count"
+
+  if [ "$watched" != "not installed" ] && [ "$detected" != "$watched" ]; then
+    info "WARNING: detected folder does not match the installed watcher. Re-run install."
+  fi
+}
+
+cmd_run() {
+  local dir
+
+  dir=$(selected_dir) || die "could not resolve screenshot folder"
+  run_sweep "$dir"
+}
+
+parse_args() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      install | uninstall | status | run | help)
+        if [ -n "$COMMAND" ]; then
+          die "multiple commands provided: $COMMAND and $1"
+        fi
+        COMMAND=$1
+        ;;
+      --dir)
+        shift
+        [ "$#" -gt 0 ] || die "--dir requires a path"
+        DIR_OVERRIDE=$1
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        ;;
+      --include-recordings)
+        INCLUDE_RECORDINGS=1
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      --version)
+        printf '%s\n' "$VERSION"
+        exit 0
+        ;;
+      *)
+        die "unknown argument: $1"
+        ;;
+    esac
+    shift
+  done
+}
+
+main() {
+  parse_args "$@"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    case "$COMMAND" in
+      install | uninstall)
+        die "--dry-run is only supported by the run command"
+        ;;
+    esac
+  fi
+
+  case "$COMMAND" in
+    "" | help)
+      usage
+      ;;
+    install)
+      cmd_install
+      ;;
+    uninstall)
+      cmd_uninstall
+      ;;
+    status)
+      cmd_status
+      ;;
+    run)
+      cmd_run
+      ;;
+    *)
+      die "unknown command: $COMMAND"
+      ;;
+  esac
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
