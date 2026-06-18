@@ -80,6 +80,9 @@ case "${1:-}" in
     ;;
   write)
     printf '%s\n' "$*" >>"${DEFAULTS_LOG:?}"
+    if [ "${DEFAULTS_FAIL_WRITE:-0}" = "1" ]; then
+      exit 1
+    fi
     exit 0
     ;;
 esac
@@ -98,6 +101,14 @@ if [ "${1:-}" = "print" ] && [ -n "${LAUNCHCTL_PRINT_OUTPUT:-}" ]; then
   cat "$LAUNCHCTL_PRINT_OUTPUT"
   exit 0
 fi
+
+case "${1:-}" in
+  bootstrap | load)
+    if [ "${LAUNCHCTL_FAIL_LOAD:-0}" = "1" ]; then
+      exit 1
+    fi
+    ;;
+esac
 
 exit 0
 EOF
@@ -403,6 +414,35 @@ mark_screenshot() {
   [[ "$output" == *"--safe-location and --set-location are only supported by the install command"* ]]
 }
 
+@test "install safe-location does not change macOS settings when launchd load fails" {
+  home="$WORK_DIR/home"
+  prefix="$WORK_DIR/prefix"
+
+  mkdir -p "$home"
+
+  run env HOME="$home" PREFIX="$prefix" MAC_SCREENSHOT_RENAME_SKIP_BACKGROUND_CHECK=1 LAUNCHCTL_FAIL_LOAD=1 "$SCRIPT" install --safe-location
+
+  [ "$status" -ne 0 ]
+  [ ! -s "$DEFAULTS_LOG" ]
+  [ ! -s "$KILLALL_LOG" ]
+  [[ "$output" == *"could not load LaunchAgent"* ]]
+}
+
+@test "install safe-location reports defaults write failures cleanly" {
+  home="$WORK_DIR/home"
+  prefix="$WORK_DIR/prefix"
+  safe_dir="$home/Screenshots"
+
+  mkdir -p "$home"
+
+  run env HOME="$home" PREFIX="$prefix" MAC_SCREENSHOT_RENAME_SKIP_BACKGROUND_CHECK=1 DEFAULTS_FAIL_WRITE=1 "$SCRIPT" install --safe-location
+
+  [ "$status" -ne 0 ]
+  grep -F "write com.apple.screencapture location $safe_dir" "$DEFAULTS_LOG"
+  [[ "$output" == *"could not set macOS screenshot location to $safe_dir"* ]]
+  [[ "$output" != *"screenshot folder does not exist:"* ]]
+}
+
 @test "status reports blocked background access from LaunchAgent logs" {
   home="$WORK_DIR/home"
   plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
@@ -438,6 +478,7 @@ EOF
   [[ "$output" == *"LaunchAgent background access: blocked"* ]]
   [[ "$output" == *"WARNING: macOS blocked the LaunchAgent from reading $WORK_DIR."* ]]
   [[ "$output" == *"Grant Full Disk Access to: $worker"* ]]
+  [[ "$output" == *"Alternatively, run: \"$worker\" install --safe-location"* ]]
   [[ "$output" == *"Dirty screenshots in detected folder: 1"* ]]
 }
 
@@ -501,4 +542,5 @@ EOF
   [[ "$output" == *"Installed io.github.betocmn.mac-screenshot-filename-sanitizer"* ]]
   [[ "$output" == *"WARNING: macOS blocked the LaunchAgent from reading $WORK_DIR."* ]]
   [[ "$output" == *"Grant Full Disk Access to: $prefix/bin/mac-screenshot-filename-sanitizer"* ]]
+  [[ "$output" == *"Alternatively, run: \"$prefix/bin/mac-screenshot-filename-sanitizer\" install --safe-location"* ]]
 }

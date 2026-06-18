@@ -22,6 +22,7 @@ SETTLE_SECONDS_PROVIDED=0
 SAFE_LOCATION=0
 SET_LOCATION=""
 SCREENSHOT_LOCATION_UPDATED=0
+CONFIGURED_SCREENSHOT_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -166,11 +167,11 @@ set_macos_screenshot_location() {
   local dir
 
   dir=$1
-  defaults write com.apple.screencapture location "$dir" || die "could not set macOS screenshot location to $dir"
+  defaults write com.apple.screencapture location "$dir" || return 1
   refresh_screenshot_location
 }
 
-configured_screenshot_location() {
+prepare_configured_screenshot_location() {
   local dir
 
   if [ "$SAFE_LOCATION" -eq 1 ]; then
@@ -184,8 +185,7 @@ configured_screenshot_location() {
   mkdir -p "$dir" || die "could not create screenshot folder: $dir"
   dir=$(absolute_path "$dir") || die "could not resolve screenshot folder: $dir"
 
-  set_macos_screenshot_location "$dir"
-  printf '%s\n' "$dir"
+  CONFIGURED_SCREENSHOT_DIR=$dir
 }
 
 launch_agents_dir() {
@@ -375,7 +375,7 @@ unreadable_directory_message() {
 
   dir=$1
   printf 'could not read directory: %s\n' "$dir" >&2
-  printf 'macOS may be blocking background access to this folder. Grant Full Disk Access to the installed worker or run: %s install --safe-location\n' "$BINARY_NAME" >&2
+  printf 'macOS may be blocking background access to this folder. Grant Full Disk Access to the installed worker or reinstall with --safe-location.\n' >&2
 }
 
 background_access_warning() {
@@ -390,7 +390,7 @@ background_access_warning() {
   info "WARNING: macOS blocked the LaunchAgent from reading $dir."
   info "Grant Full Disk Access to: $worker"
   info "Then run: launchctl kickstart -k gui/$uid/$LABEL"
-  info "Alternatively, run: $BINARY_NAME install --safe-location"
+  info "Alternatively, run: \"$worker\" install --safe-location"
 }
 
 sanitized_name_for() {
@@ -933,10 +933,13 @@ cmd_install() {
   local plist
   local worker
   local log_file
+  local update_screenshot_location
 
+  update_screenshot_location=0
   if [ "$SAFE_LOCATION" -eq 1 ] || [ -n "$SET_LOCATION" ]; then
-    dir=$(configured_screenshot_location)
-    SCREENSHOT_LOCATION_UPDATED=1
+    prepare_configured_screenshot_location
+    dir=$CONFIGURED_SCREENSHOT_DIR
+    update_screenshot_location=1
   else
     dir=$(selected_dir) || die "could not resolve screenshot folder"
   fi
@@ -951,6 +954,11 @@ cmd_install() {
 
   write_plist "$plist" "$dir" "$worker" "$log_file"
   load_agent "$plist" || die "could not load LaunchAgent"
+
+  if [ "$update_screenshot_location" -eq 1 ]; then
+    set_macos_screenshot_location "$dir" || die "could not set macOS screenshot location to $dir"
+    SCREENSHOT_LOCATION_UPDATED=1
+  fi
 
   info "Installed $LABEL"
   info "Watching: $dir"
