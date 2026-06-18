@@ -271,6 +271,7 @@ mark_screenshot() {
   grep -F "<string>2</string>" "$plist"
   grep -F "<key>RunAtLoad</key>" "$plist"
   grep -F "<true/>" "$plist"
+  grep -F "<key>MAC_SCREENSHOT_RENAME_LAUNCHD_LOG_MARKERS</key>" "$plist"
   grep -F "<string>$log_file</string>" "$plist"
 }
 
@@ -336,7 +337,10 @@ mark_screenshot() {
   source "$SCRIPT"
   write_plist "$plist" "$WORK_DIR" "$worker" "$log_file"
 
-  printf 'could not read directory: %s\n' "$WORK_DIR" >"$log_file"
+  {
+    printf 'mac-screenshot-filename-sanitizer launchd run started: %s\n' "$WORK_DIR"
+    printf 'could not read directory: %s\n' "$WORK_DIR"
+  } >"$log_file"
   cat >"$launchctl_output" <<'EOF'
 gui/501/io.github.betocmn.mac-screenshot-filename-sanitizer = {
   runs = 1
@@ -354,6 +358,42 @@ EOF
   [[ "$output" == *"Dirty screenshots in detected folder: 1"* ]]
 }
 
+@test "status ignores stale unreadable directory logs from earlier launchd runs" {
+  home="$WORK_DIR/home"
+  plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
+  log_file="$home/Library/Logs/io.github.betocmn.mac-screenshot-filename-sanitizer.log"
+  worker="$WORK_DIR/mac-screenshot-filename-sanitizer"
+  launchctl_output="$WORK_DIR/launchctl-print"
+
+  mkdir -p "${plist%/*}" "${log_file%/*}"
+  touch "$worker"
+  chmod 0755 "$worker"
+
+  # shellcheck source=/dev/null
+  source "$SCRIPT"
+  write_plist "$plist" "$WORK_DIR" "$worker" "$log_file"
+
+  {
+    printf 'mac-screenshot-filename-sanitizer launchd run started: %s\n' "$WORK_DIR"
+    printf 'could not read directory: %s\n' "$WORK_DIR"
+    printf 'mac-screenshot-filename-sanitizer launchd run started: %s\n' "$WORK_DIR"
+    printf 'some later worker failure\n'
+  } >"$log_file"
+  cat >"$launchctl_output" <<'EOF'
+gui/501/io.github.betocmn.mac-screenshot-filename-sanitizer = {
+  runs = 2
+  last exit code = 2
+}
+EOF
+
+  run env HOME="$home" LAUNCHCTL_PRINT_OUTPUT="$launchctl_output" "$SCRIPT" status --dir "$WORK_DIR"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LaunchAgent last exit code: 2"* ]]
+  [[ "$output" == *"LaunchAgent background access: failed (last exit code 2)"* ]]
+  [[ "$output" != *"WARNING: macOS blocked the LaunchAgent"* ]]
+}
+
 @test "install warns when the launchd smoke check cannot read the watched folder" {
   home="$WORK_DIR/home"
   prefix="$WORK_DIR/prefix"
@@ -361,7 +401,10 @@ EOF
   launchctl_output="$WORK_DIR/launchctl-print"
 
   mkdir -p "${log_file%/*}"
-  printf 'could not read directory: %s\n' "$WORK_DIR" >"$log_file"
+  {
+    printf 'mac-screenshot-filename-sanitizer launchd run started: %s\n' "$WORK_DIR"
+    printf 'could not read directory: %s\n' "$WORK_DIR"
+  } >"$log_file"
   cat >"$launchctl_output" <<'EOF'
 gui/501/io.github.betocmn.mac-screenshot-filename-sanitizer = {
   runs = 1

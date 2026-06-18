@@ -11,6 +11,7 @@ BINARY_NAME="mac-screenshot-filename-sanitizer"
 SCREENSHOT_XATTR="com.apple.metadata:kMDItemIsScreenCapture"
 LAUNCHD_SETTLE_SECONDS=2
 LAUNCHD_INSTALL_CHECK_GRACE_SECONDS=1
+LAUNCHD_LOG_MARKER_PREFIX="$BINARY_NAME launchd run started: "
 
 COMMAND=""
 DIR_OVERRIDE=""
@@ -636,6 +637,11 @@ write_plist() {
     printf '%s\n' '  </array>'
     printf '%s\n' '  <key>RunAtLoad</key>'
     printf '%s\n' '  <true/>'
+    printf '%s\n' '  <key>EnvironmentVariables</key>'
+    printf '%s\n' '  <dict>'
+    printf '%s\n' '    <key>MAC_SCREENSHOT_RENAME_LAUNCHD_LOG_MARKERS</key>'
+    printf '%s\n' '    <string>1</string>'
+    printf '%s\n' '  </dict>'
     printf '%s\n' '  <key>WatchPaths</key>'
     printf '%s\n' '  <array>'
     printf '    <string>%s</string>\n' "$escaped_watch_dir"
@@ -805,12 +811,41 @@ EOF
 log_has_unreadable_directory() {
   local log_file
   local dir
+  local line
+  local unreadable_line
+  local saw_marker
+  local latest_marker_matches
+  local found
 
   log_file=$1
   dir=$2
+  unreadable_line="could not read directory: $dir"
+  saw_marker=0
+  latest_marker_matches=0
+  found=0
 
   [ -f "$log_file" ] || return 1
-  grep -F "could not read directory: $dir" "$log_file" >/dev/null 2>&1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$LAUNCHD_LOG_MARKER_PREFIX"*)
+        saw_marker=1
+        found=0
+        if [ "${line#"$LAUNCHD_LOG_MARKER_PREFIX"}" = "$dir" ]; then
+          latest_marker_matches=1
+        else
+          latest_marker_matches=0
+        fi
+        ;;
+      "$unreadable_line")
+        if [ "$latest_marker_matches" -eq 1 ]; then
+          found=1
+        fi
+        ;;
+    esac
+  done <"$log_file"
+
+  [ "$saw_marker" -eq 1 ] || return 1
+  [ "$found" -eq 1 ]
 }
 
 install_settle_seconds() {
@@ -962,6 +997,9 @@ cmd_run() {
   local dir
 
   dir=$(selected_dir) || die "could not resolve screenshot folder"
+  if [ "${MAC_SCREENSHOT_RENAME_LAUNCHD_LOG_MARKERS:-0}" = "1" ]; then
+    printf '%s%s\n' "$LAUNCHD_LOG_MARKER_PREFIX" "$dir" >&2
+  fi
   settle_before_run
   run_sweep "$dir"
 }
