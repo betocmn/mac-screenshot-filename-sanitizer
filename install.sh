@@ -20,23 +20,6 @@ strip_trailing_slashes() {
   printf '%s\n' "$path"
 }
 
-script_dir() {
-  local script_path
-  local dir
-
-  script_path=${BASH_SOURCE[0]:-$0}
-  case "$script_path" in
-    */*)
-      dir=${script_path%/*}
-      ;;
-    *)
-      dir=.
-      ;;
-  esac
-
-  (cd "$dir" 2>/dev/null && pwd -P) || pwd -P
-}
-
 install_prefix() {
   local prefix
 
@@ -44,12 +27,72 @@ install_prefix() {
   strip_trailing_slashes "$prefix"
 }
 
+local_worker_source() {
+  local script_path
+  local dir
+  local source_file
+
+  script_path=${BASH_SOURCE[0]:-}
+  case "${script_path##*/}" in
+    install.sh)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  case "$script_path" in
+    */*)
+      ;;
+    *)
+      script_path=./$script_path
+      ;;
+  esac
+
+  [ -f "$script_path" ] || return 1
+  dir=${script_path%/*}
+  dir=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
+  source_file=$dir/$BINARY_NAME
+  [ -f "$source_file" ] || return 1
+
+  printf '%s\n' "$source_file"
+}
+
+download_worker() {
+  local url
+  local tmp
+
+  url=$1
+  tmp=$2
+
+  command -v curl >/dev/null 2>&1 || die "curl is required when installing without a local clone"
+  curl -fsSL "$url" -o "$tmp" || die "could not download $url"
+}
+
+install_worker() {
+  local target
+  local source_file
+  local tmp
+  local url
+
+  target=$1
+  url=$2
+  tmp=$target.$$
+
+  if source_file=$(local_worker_source); then
+    cp "$source_file" "$tmp" || die "could not copy $source_file"
+  else
+    download_worker "$url" "$tmp"
+  fi
+
+  chmod 0755 "$tmp" || die "could not chmod $tmp"
+  mv -f "$tmp" "$target" || die "could not install $target"
+}
+
 main() {
   local prefix
   local bin_dir
   local target
-  local source_file
-  local tmp
   local url
   local arg
 
@@ -62,21 +105,10 @@ main() {
   prefix=$(install_prefix)
   bin_dir=$prefix/bin
   target=$bin_dir/$BINARY_NAME
-  source_file=$(script_dir)/$BINARY_NAME
   url=${MAC_SCREENSHOT_RENAME_URL:-$DEFAULT_URL}
 
   mkdir -p "$bin_dir" || die "could not create $bin_dir"
-
-  tmp=$target.$$
-  if [ -f "$source_file" ]; then
-    cp "$source_file" "$tmp" || die "could not copy $source_file"
-  else
-    command -v curl >/dev/null 2>&1 || die "curl is required when installing without a local clone"
-    curl -fsSL "$url" -o "$tmp" || die "could not download $url"
-  fi
-
-  chmod 0755 "$tmp" || die "could not chmod $tmp"
-  mv -f "$tmp" "$target" || die "could not install $target"
+  install_worker "$target" "$url"
 
   "$target" install "$@"
 }
