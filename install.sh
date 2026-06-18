@@ -69,32 +69,28 @@ download_worker() {
   curl -fsSL "$url" -o "$tmp" || die "could not download $url"
 }
 
-install_worker() {
-  local target
-  local source_file
+prepare_downloaded_worker() {
+  local bin_dir
   local tmp
   local url
 
-  target=$1
+  bin_dir=$1
   url=$2
-  tmp=$target.$$
 
-  if source_file=$(local_worker_source); then
-    cp "$source_file" "$tmp" || die "could not copy $source_file"
-  else
-    download_worker "$url" "$tmp"
-  fi
-
+  tmp=$(mktemp "$bin_dir/$BINARY_NAME.installer.XXXXXX") || die "could not create temporary worker"
+  download_worker "$url" "$tmp"
   chmod 0755 "$tmp" || die "could not chmod $tmp"
-  mv -f "$tmp" "$target" || die "could not install $target"
+  printf '%s\n' "$tmp"
 }
 
 main() {
   local prefix
   local bin_dir
-  local target
   local url
   local arg
+  local worker
+  local worker_is_temp
+  local result
 
   for arg in "$@"; do
     if [ "$arg" = "--dry-run" ]; then
@@ -104,13 +100,23 @@ main() {
 
   prefix=$(install_prefix)
   bin_dir=$prefix/bin
-  target=$bin_dir/$BINARY_NAME
   url=${MAC_SCREENSHOT_RENAME_URL:-$DEFAULT_URL}
+  worker_is_temp=0
 
   mkdir -p "$bin_dir" || die "could not create $bin_dir"
-  install_worker "$target" "$url"
+  if worker=$(local_worker_source); then
+    :
+  else
+    worker=$(prepare_downloaded_worker "$bin_dir" "$url")
+    worker_is_temp=1
+  fi
 
-  "$target" install "$@"
+  "$worker" install "$@"
+  result=$?
+  if [ "$worker_is_temp" -eq 1 ]; then
+    rm -f "$worker"
+  fi
+  return "$result"
 }
 
 main "$@"
