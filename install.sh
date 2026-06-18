@@ -65,36 +65,48 @@ download_worker() {
   url=$1
   tmp=$2
 
-  command -v curl >/dev/null 2>&1 || die "curl is required when installing without a local clone"
-  curl -fsSL "$url" -o "$tmp" || die "could not download $url"
+  command -v curl >/dev/null 2>&1 || {
+    printf 'error: curl is required when installing without a local clone\n' >&2
+    return 1
+  }
+  curl -fsSL "$url" -o "$tmp" || {
+    printf 'error: could not download %s\n' "$url" >&2
+    return 1
+  }
 }
 
-install_worker() {
-  local target
-  local source_file
+prepare_downloaded_worker() {
+  local bin_dir
   local tmp
   local url
 
-  target=$1
+  bin_dir=$1
   url=$2
-  tmp=$target.$$
 
-  if source_file=$(local_worker_source); then
-    cp "$source_file" "$tmp" || die "could not copy $source_file"
-  else
-    download_worker "$url" "$tmp"
+  tmp=$(mktemp "$bin_dir/$BINARY_NAME.installer.XXXXXX") || {
+    printf 'error: could not create temporary worker\n' >&2
+    return 1
+  }
+  if ! download_worker "$url" "$tmp"; then
+    rm -f "$tmp"
+    return 1
   fi
-
-  chmod 0755 "$tmp" || die "could not chmod $tmp"
-  mv -f "$tmp" "$target" || die "could not install $target"
+  if ! chmod 0755 "$tmp"; then
+    printf 'error: could not chmod %s\n' "$tmp" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  printf '%s\n' "$tmp"
 }
 
 main() {
   local prefix
   local bin_dir
-  local target
   local url
   local arg
+  local worker
+  local worker_is_temp
+  local result
 
   for arg in "$@"; do
     if [ "$arg" = "--dry-run" ]; then
@@ -104,13 +116,23 @@ main() {
 
   prefix=$(install_prefix)
   bin_dir=$prefix/bin
-  target=$bin_dir/$BINARY_NAME
   url=${MAC_SCREENSHOT_RENAME_URL:-$DEFAULT_URL}
+  worker_is_temp=0
 
   mkdir -p "$bin_dir" || die "could not create $bin_dir"
-  install_worker "$target" "$url"
+  if worker=$(local_worker_source); then
+    :
+  else
+    worker=$(prepare_downloaded_worker "$bin_dir" "$url") || return $?
+    worker_is_temp=1
+  fi
 
-  "$target" install "$@"
+  "$worker" install "$@"
+  result=$?
+  if [ "$worker_is_temp" -eq 1 ]; then
+    rm -f "$worker"
+  fi
+  return "$result"
 }
 
 main "$@"

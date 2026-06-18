@@ -19,6 +19,10 @@ DRY_RUN=0
 INCLUDE_RECORDINGS=0
 SETTLE_SECONDS=0
 SETTLE_SECONDS_PROVIDED=0
+SAFE_LOCATION=0
+SET_LOCATION=""
+SCREENSHOT_LOCATION_UPDATED=0
+CONFIGURED_SCREENSHOT_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -38,6 +42,8 @@ Commands:
 
 Global flags:
   --dir <path>             Override the detected screenshot folder
+  --safe-location          Create ~/Screenshots, set macOS screenshots there, and watch it (install only)
+  --set-location <path>    Create path, set macOS screenshots there, and watch it (install only)
   --dry-run                Print intended renames without changing files (run only)
   --include-recordings     Also rename matching .mov/.mp4 screen recordings
   --settle-seconds <n>     Wait before sweeping so screenshot metadata can settle
@@ -145,6 +151,73 @@ selected_dir() {
   else
     detect_screenshot_dir
   fi
+}
+
+default_safe_screenshot_dir() {
+  printf '%s/Screenshots\n' "$HOME"
+}
+
+refresh_screenshot_location() {
+  if command -v killall >/dev/null 2>&1; then
+    killall SystemUIServer >/dev/null 2>&1 || true
+  fi
+}
+
+read_macos_screenshot_location_setting() {
+  defaults read com.apple.screencapture location 2>/dev/null
+}
+
+set_macos_screenshot_location() {
+  local dir
+
+  dir=$1
+  defaults write com.apple.screencapture location "$dir" || return 1
+  refresh_screenshot_location
+}
+
+restore_macos_screenshot_location() {
+  local was_set
+  local previous_location
+
+  was_set=$1
+  previous_location=$2
+
+  if [ "$was_set" -eq 1 ]; then
+    defaults write com.apple.screencapture location "$previous_location" || return 1
+  else
+    defaults delete com.apple.screencapture location >/dev/null 2>&1 || return 1
+  fi
+  refresh_screenshot_location
+}
+
+prepare_configured_screenshot_location() {
+  local dir
+
+  if [ "$SAFE_LOCATION" -eq 1 ]; then
+    dir=$(default_safe_screenshot_dir)
+  else
+    dir=$SET_LOCATION
+  fi
+
+  [ -n "$dir" ] || die "screenshot location cannot be empty"
+  dir=$(absolute_path "$dir") || die "could not resolve screenshot location: $dir"
+  mkdir -p "$dir" || die "could not create screenshot folder: $dir"
+  dir=$(absolute_path "$dir") || die "could not resolve screenshot folder: $dir"
+
+  CONFIGURED_SCREENSHOT_DIR=$dir
+}
+
+backup_file() {
+  local source
+  local backup
+
+  source=$1
+  backup=$(mktemp "${TMPDIR:-/tmp}/$BINARY_NAME.backup.XXXXXX") || return 1
+  cp -p "$source" "$backup" || {
+    rm -f "$backup"
+    return 1
+  }
+  printf '%s\n' "$backup"
 }
 
 launch_agents_dir() {
@@ -334,7 +407,7 @@ unreadable_directory_message() {
 
   dir=$1
   printf 'could not read directory: %s\n' "$dir" >&2
-  printf 'macOS may be blocking background access to this folder. Grant Full Disk Access to the installed worker or choose another screenshot folder.\n' >&2
+  printf 'macOS may be blocking background access to this folder. Grant Full Disk Access to the installed worker or reinstall with --safe-location.\n' >&2
 }
 
 background_access_warning() {
@@ -349,7 +422,7 @@ background_access_warning() {
   info "WARNING: macOS blocked the LaunchAgent from reading $dir."
   info "Grant Full Disk Access to: $worker"
   info "Then run: launchctl kickstart -k gui/$uid/$LABEL"
-  info "Alternatively, choose a screenshot folder outside Desktop, Documents, or Downloads and reinstall with --dir."
+  info "Alternatively, run: \"$worker\" install --safe-location"
 }
 
 sanitized_name_for() {
@@ -773,6 +846,56 @@ unload_agent() {
   launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || launchctl unload "$plist" >/dev/null 2>&1 || true
 }
 
+rollback_install_changes() {
+  local plist
+  local previous_plist_backup
+  local previous_plist_exists
+  local previous_agent_loaded
+  local worker
+  local previous_worker_backup
+  local previous_worker_exists
+  local previous_screenshot_location_set
+  local previous_screenshot_location
+  local screenshot_location_changed
+  local failed
+
+  plist=$1
+  previous_plist_backup=$2
+  previous_plist_exists=$3
+  previous_agent_loaded=$4
+  worker=$5
+  previous_worker_backup=$6
+  previous_worker_exists=$7
+  previous_screenshot_location_set=$8
+  previous_screenshot_location=$9
+  screenshot_location_changed=${10}
+  failed=0
+
+  unload_agent "$plist"
+
+  if [ "$previous_plist_exists" -eq 1 ]; then
+    cp -p "$previous_plist_backup" "$plist" || failed=1
+  else
+    rm -f "$plist" || failed=1
+  fi
+
+  if [ "$previous_worker_exists" -eq 1 ]; then
+    cp -p "$previous_worker_backup" "$worker" || failed=1
+  else
+    rm -f "$worker" || failed=1
+  fi
+
+  if [ "$screenshot_location_changed" -eq 1 ]; then
+    restore_macos_screenshot_location "$previous_screenshot_location_set" "$previous_screenshot_location" || failed=1
+  fi
+
+  if [ "$previous_plist_exists" -eq 1 ] && [ "$previous_agent_loaded" -eq 1 ]; then
+    load_agent "$plist" || failed=1
+  fi
+
+  return "$failed"
+}
+
 agent_loaded() {
   local domain
 
@@ -860,6 +983,7 @@ check_background_access_after_install() {
   local dir
   local worker
   local log_file
+  local warn
   local settle_seconds
   local wait_seconds
   local launchd_state
@@ -868,6 +992,7 @@ check_background_access_after_install() {
   dir=$1
   worker=$2
   log_file=$3
+  warn=${4:-1}
   settle_seconds=$(install_settle_seconds)
   wait_seconds=$((settle_seconds + LAUNCHD_INSTALL_CHECK_GRACE_SECONDS))
 
@@ -882,7 +1007,9 @@ check_background_access_after_install() {
   launchd_state=$(agent_print) || return 0
   last_exit=$(printf '%s\n' "$launchd_state" | agent_last_exit_code) || return 0
   if [ "$last_exit" != "0" ] && log_has_unreadable_directory "$log_file" "$dir"; then
-    background_access_warning "$dir" "$worker"
+    if [ "$warn" -eq 1 ]; then
+      background_access_warning "$dir" "$worker"
+    fi
     return 1
   fi
 }
@@ -892,26 +1019,121 @@ cmd_install() {
   local plist
   local worker
   local log_file
+  local update_screenshot_location
+  local screenshot_location_changed
+  local previous_screenshot_location
+  local previous_screenshot_location_set
+  local previous_plist_backup
+  local previous_plist_exists
+  local previous_agent_loaded
+  local previous_worker_backup
+  local previous_worker_exists
 
-  dir=$(selected_dir) || die "could not resolve screenshot folder"
+  update_screenshot_location=0
+  screenshot_location_changed=0
+  previous_screenshot_location=
+  previous_screenshot_location_set=0
+  previous_plist_backup=
+  previous_plist_exists=0
+  previous_agent_loaded=0
+  previous_worker_backup=
+  previous_worker_exists=0
+
+  if [ "$SAFE_LOCATION" -eq 1 ] || [ -n "$SET_LOCATION" ]; then
+    prepare_configured_screenshot_location
+    dir=$CONFIGURED_SCREENSHOT_DIR
+    update_screenshot_location=1
+  else
+    dir=$(selected_dir) || die "could not resolve screenshot folder"
+  fi
   [ -d "$dir" ] || die "screenshot folder does not exist: $dir"
 
   mkdir -p "$(launch_agents_dir)" || die "could not create LaunchAgents directory"
   mkdir -p "$(logs_dir)" || die "could not create Logs directory"
 
-  worker=$(ensure_installed_binary)
   plist=$(plist_path)
+  worker=$(installed_binary_path)
   log_file=$(log_path)
 
-  write_plist "$plist" "$dir" "$worker" "$log_file"
-  load_agent "$plist" || die "could not load LaunchAgent"
+  if [ -f "$plist" ]; then
+    previous_plist_exists=1
+    previous_plist_backup=$(backup_file "$plist") || die "could not back up $plist"
+  fi
+  if agent_loaded; then
+    previous_agent_loaded=1
+  fi
+  if [ -e "$worker" ]; then
+    previous_worker_exists=1
+    previous_worker_backup=$(backup_file "$worker") || die "could not back up $worker"
+  fi
+  if [ "$update_screenshot_location" -eq 1 ]; then
+    if previous_screenshot_location=$(read_macos_screenshot_location_setting); then
+      previous_screenshot_location_set=1
+    else
+      previous_screenshot_location=
+      previous_screenshot_location_set=0
+    fi
+  fi
+
+  worker=$(ensure_installed_binary) || exit $?
+  if ! write_plist "$plist" "$dir" "$worker" "$log_file"; then
+    rollback_install_changes "$plist" "$previous_plist_backup" "$previous_plist_exists" "$previous_agent_loaded" "$worker" "$previous_worker_backup" "$previous_worker_exists" "$previous_screenshot_location_set" "$previous_screenshot_location" "$screenshot_location_changed" || printf 'warning: rollback may be incomplete\n' >&2
+    [ -z "$previous_plist_backup" ] || rm -f "$previous_plist_backup"
+    [ -z "$previous_worker_backup" ] || rm -f "$previous_worker_backup"
+    die "could not write LaunchAgent plist"
+  fi
+  if ! load_agent "$plist"; then
+    rollback_install_changes "$plist" "$previous_plist_backup" "$previous_plist_exists" "$previous_agent_loaded" "$worker" "$previous_worker_backup" "$previous_worker_exists" "$previous_screenshot_location_set" "$previous_screenshot_location" "$screenshot_location_changed" || printf 'warning: rollback may be incomplete\n' >&2
+    [ -z "$previous_plist_backup" ] || rm -f "$previous_plist_backup"
+    [ -z "$previous_worker_backup" ] || rm -f "$previous_worker_backup"
+    die "could not load LaunchAgent"
+  fi
+
+  if [ "$update_screenshot_location" -eq 1 ]; then
+    if ! set_macos_screenshot_location "$dir"; then
+      rollback_install_changes "$plist" "$previous_plist_backup" "$previous_plist_exists" "$previous_agent_loaded" "$worker" "$previous_worker_backup" "$previous_worker_exists" "$previous_screenshot_location_set" "$previous_screenshot_location" "$screenshot_location_changed" || printf 'warning: rollback may be incomplete\n' >&2
+      [ -z "$previous_plist_backup" ] || rm -f "$previous_plist_backup"
+      [ -z "$previous_worker_backup" ] || rm -f "$previous_worker_backup"
+      die "could not set macOS screenshot location to $dir"
+    fi
+    screenshot_location_changed=1
+    SCREENSHOT_LOCATION_UPDATED=1
+  fi
+
+  if [ "$update_screenshot_location" -eq 0 ]; then
+    [ -z "$previous_plist_backup" ] || rm -f "$previous_plist_backup"
+    [ -z "$previous_worker_backup" ] || rm -f "$previous_worker_backup"
+
+    info "Installed $LABEL"
+    info "Watching: $dir"
+    info "Worker: $worker"
+    info "Log: $log_file"
+    info "No macOS screenshot settings were changed."
+    check_background_access_after_install "$dir" "$worker" "$log_file"
+    return $?
+  fi
+
+  if ! check_background_access_after_install "$dir" "$worker" "$log_file" 0; then
+    rollback_install_changes "$plist" "$previous_plist_backup" "$previous_plist_exists" "$previous_agent_loaded" "$worker" "$previous_worker_backup" "$previous_worker_exists" "$previous_screenshot_location_set" "$previous_screenshot_location" "$screenshot_location_changed" || printf 'warning: rollback may be incomplete\n' >&2
+    [ -z "$previous_plist_backup" ] || rm -f "$previous_plist_backup"
+    [ -z "$previous_worker_backup" ] || rm -f "$previous_worker_backup"
+    info "WARNING: macOS blocked the LaunchAgent from reading $dir."
+    info "Rolled back the attempted install; previous watcher state and screenshot location were restored."
+    die "install failed because the LaunchAgent could not read $dir"
+  fi
+
+  [ -z "$previous_plist_backup" ] || rm -f "$previous_plist_backup"
+  [ -z "$previous_worker_backup" ] || rm -f "$previous_worker_backup"
 
   info "Installed $LABEL"
   info "Watching: $dir"
   info "Worker: $worker"
   info "Log: $log_file"
-  info "No macOS screenshot settings were changed."
-  check_background_access_after_install "$dir" "$worker" "$log_file"
+  if [ "$SCREENSHOT_LOCATION_UPDATED" -eq 1 ]; then
+    info "Set macOS screenshot location: $dir"
+  else
+    info "No macOS screenshot settings were changed."
+  fi
 }
 
 cmd_uninstall() {
@@ -1020,6 +1242,15 @@ parse_args() {
         [ "$#" -gt 0 ] || die "--dir requires a path"
         DIR_OVERRIDE=$1
         ;;
+      --safe-location)
+        SAFE_LOCATION=1
+        ;;
+      --set-location)
+        shift
+        [ "$#" -gt 0 ] || die "--set-location requires a path"
+        [ -n "$1" ] || die "--set-location requires a path"
+        SET_LOCATION=$1
+        ;;
       --dry-run)
         DRY_RUN=1
         ;;
@@ -1056,6 +1287,20 @@ parse_args() {
 
 main() {
   parse_args "$@"
+
+  if [ "$SAFE_LOCATION" -eq 1 ] && [ -n "$SET_LOCATION" ]; then
+    die "--safe-location cannot be combined with --set-location"
+  fi
+  if [ "$SAFE_LOCATION" -eq 1 ] || [ -n "$SET_LOCATION" ]; then
+    case "$COMMAND" in
+      install)
+        ;;
+      *)
+        die "--safe-location and --set-location are only supported by the install command"
+        ;;
+    esac
+    [ -z "$DIR_OVERRIDE" ] || die "--dir cannot be combined with --safe-location or --set-location"
+  fi
 
   if [ "$DRY_RUN" -eq 1 ]; then
     case "$COMMAND" in

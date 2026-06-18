@@ -16,7 +16,7 @@ screenshot-2026-06-17-at-9-14-48-pm.png
 
 ## Non-Invasive Design
 
-This tool is an observer. It does not change macOS screenshot settings, does not move your screenshot folder, and does not write any `com.apple.screencapture` defaults.
+By default, this tool is an observer. It does not change macOS screenshot settings, does not move your screenshot folder, and does not write any `com.apple.screencapture` defaults.
 
 On install, it detects the folder where screenshots already land:
 
@@ -31,6 +31,14 @@ xattr -p com.apple.metadata:kMDItemIsScreenCapture "$file"
 ```
 
 That safety gate is locale-proof, rename-proof, and does not depend on Spotlight indexing. Files without that metadata are left alone, even if their names look like screenshots.
+
+If your current screenshot folder is protected by macOS privacy controls, such as Desktop, Documents, or Downloads, you can opt into changing the macOS screenshot location during install:
+
+```sh
+./install.sh --safe-location
+```
+
+That creates `$HOME/Screenshots`, tells macOS to save new screenshots there, and watches that folder instead. Existing screenshots are not moved.
 
 ## Install
 
@@ -48,6 +56,12 @@ To choose another install prefix:
 
 ```sh
 PREFIX="$HOME/bin" ./install.sh
+```
+
+To set a custom screenshot folder and install the watcher for it:
+
+```sh
+./install.sh --set-location "$HOME/Pictures/Screenshots"
 ```
 
 You can install with a one-liner, but clone and read the script first if you can:
@@ -84,7 +98,7 @@ mac-screenshot-filename-sanitizer install
 
 `mac-screenshot-filename-sanitizer status` warns when the detected folder no longer matches the folder baked into the installed LaunchAgent.
 
-## Desktop Tradeoff
+## Avoiding Full Disk Access
 
 If your screenshots land on the Desktop, the LaunchAgent watches the Desktop. That can sound broad, but the worker does cheap checks first:
 
@@ -94,6 +108,20 @@ If your screenshots land on the Desktop, the LaunchAgent watches the Desktop. Th
 4. only then call `xattr` on the remaining dirty candidates
 
 It never runs `xattr` across the whole directory, and it never renames files that lack the screenshot metadata.
+
+macOS may still block background LaunchAgents from reading Desktop, Documents, or Downloads unless the worker has Full Disk Access. A `Screenshots` subfolder inside Desktop is usually still inside that protected Desktop scope, so it is not a reliable way to avoid the permission prompt.
+
+Use `--safe-location` to create and watch `$HOME/Screenshots`, which is outside those protected folders:
+
+```sh
+mac-screenshot-filename-sanitizer install --safe-location
+```
+
+Or choose your own folder:
+
+```sh
+mac-screenshot-filename-sanitizer install --set-location "$HOME/Pictures/Screenshots"
+```
 
 ## Sanitization Rules
 
@@ -195,7 +223,13 @@ If `status` reports dirty screenshots but the LaunchAgent does not rename them, 
 tail -80 "$HOME/Library/Logs/io.github.betocmn.mac-screenshot-filename-sanitizer.log"
 ```
 
-macOS can allow the item in Background Activity while still blocking background access to protected folders such as Desktop, Documents, or Downloads. In that case the log says the worker could not read the watched directory. Grant Full Disk Access to the installed worker, or choose a screenshot folder outside the protected locations and reinstall the watcher for that folder with `--dir`.
+macOS can allow the item in Background Activity while still blocking background access to protected folders such as Desktop, Documents, or Downloads. In that case the log says the worker could not read the watched directory. Grant Full Disk Access to the installed worker, or choose a screenshot folder outside the protected locations and reinstall the watcher with `--set-location`.
+
+To avoid Full Disk Access, let the tool create and use `$HOME/Screenshots`:
+
+```sh
+mac-screenshot-filename-sanitizer install --safe-location
+```
 
 ## Uninstall
 
@@ -211,7 +245,7 @@ Or directly:
 mac-screenshot-filename-sanitizer uninstall
 ```
 
-Uninstall unloads and removes the LaunchAgent and removes the installed worker from `$PREFIX/bin`. It does not modify macOS defaults and does not move, rename, or delete screenshot files.
+Uninstall unloads and removes the LaunchAgent and removes the installed worker from `$PREFIX/bin`. It does not move, rename, or delete screenshot files. If you installed with `--safe-location` or `--set-location`, uninstall leaves the macOS screenshot location where you set it.
 
 ## Development
 
