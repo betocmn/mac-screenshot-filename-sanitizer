@@ -164,10 +164,30 @@ Status reports:
 - detected screenshot folder
 - folder currently written into the LaunchAgent
 - whether the LaunchAgent is loaded
+- the LaunchAgent's last exit code
+- whether the LaunchAgent appears able to read the watched folder
 - a warning if those folders differ
 - how many verified screenshots currently have dirty names
 
 ## Troubleshooting
+
+After install, the tool waits for the first LaunchAgent run. If macOS blocks background access to the watched folder, install prints a warning and exits nonzero so the failure is visible immediately. You can also check later with:
+
+```sh
+mac-screenshot-filename-sanitizer status
+```
+
+If status reports:
+
+```text
+LaunchAgent background access: blocked
+```
+
+grant Full Disk Access to the worker path shown in the warning, then restart the loaded agent:
+
+```sh
+launchctl kickstart -k "gui/$(id -u)/io.github.betocmn.mac-screenshot-filename-sanitizer"
+```
 
 If `status` reports dirty screenshots but the LaunchAgent does not rename them, check the log:
 
@@ -175,7 +195,7 @@ If `status` reports dirty screenshots but the LaunchAgent does not rename them, 
 tail -80 "$HOME/Library/Logs/io.github.betocmn.mac-screenshot-filename-sanitizer.log"
 ```
 
-macOS can allow the item in Background Activity while still blocking background access to protected folders such as Desktop, Documents, or Downloads. In that case the log says the worker could not read the watched directory. Grant Full Disk Access to the background worker shown by macOS, or choose a screenshot folder outside the protected locations and reinstall the watcher for that folder.
+macOS can allow the item in Background Activity while still blocking background access to protected folders such as Desktop, Documents, or Downloads. In that case the log says the worker could not read the watched directory. Grant Full Disk Access to the installed worker, or choose a screenshot folder outside the protected locations and reinstall the watcher for that folder with `--dir`.
 
 ## Uninstall
 

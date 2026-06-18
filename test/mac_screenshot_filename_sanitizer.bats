@@ -64,6 +64,11 @@ EOF
 
   cat >"$MOCK_BIN/launchctl" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "print" ] && [ -n "${LAUNCHCTL_PRINT_OUTPUT:-}" ]; then
+  cat "$LAUNCHCTL_PRINT_OUTPUT"
+  exit 0
+fi
+
 exit 0
 EOF
 
@@ -312,4 +317,62 @@ mark_screenshot() {
   run "$SCRIPT" uninstall --dry-run
   [ "$status" -ne 0 ]
   [[ "$output" == *"--dry-run is only supported by the run command"* ]]
+}
+
+@test "status reports blocked background access from LaunchAgent logs" {
+  home="$WORK_DIR/home"
+  plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
+  log_file="$home/Library/Logs/io.github.betocmn.mac-screenshot-filename-sanitizer.log"
+  worker="$WORK_DIR/mac-screenshot-filename-sanitizer"
+  launchctl_output="$WORK_DIR/launchctl-print"
+  file="$WORK_DIR/Screenshot 2026.png"
+
+  mkdir -p "${plist%/*}" "${log_file%/*}"
+  touch "$worker" "$file"
+  chmod 0755 "$worker"
+  mark_screenshot "$file"
+
+  # shellcheck source=/dev/null
+  source "$SCRIPT"
+  write_plist "$plist" "$WORK_DIR" "$worker" "$log_file"
+
+  printf 'could not read directory: %s\n' "$WORK_DIR" >"$log_file"
+  cat >"$launchctl_output" <<'EOF'
+gui/501/io.github.betocmn.mac-screenshot-filename-sanitizer = {
+  runs = 1
+  last exit code = 1
+}
+EOF
+
+  run env HOME="$home" LAUNCHCTL_PRINT_OUTPUT="$launchctl_output" "$SCRIPT" status --dir "$WORK_DIR"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LaunchAgent last exit code: 1"* ]]
+  [[ "$output" == *"LaunchAgent background access: blocked"* ]]
+  [[ "$output" == *"WARNING: macOS blocked the LaunchAgent from reading $WORK_DIR."* ]]
+  [[ "$output" == *"Grant Full Disk Access to: $worker"* ]]
+  [[ "$output" == *"Dirty screenshots in detected folder: 1"* ]]
+}
+
+@test "install warns when the launchd smoke check cannot read the watched folder" {
+  home="$WORK_DIR/home"
+  prefix="$WORK_DIR/prefix"
+  log_file="$home/Library/Logs/io.github.betocmn.mac-screenshot-filename-sanitizer.log"
+  launchctl_output="$WORK_DIR/launchctl-print"
+
+  mkdir -p "${log_file%/*}"
+  printf 'could not read directory: %s\n' "$WORK_DIR" >"$log_file"
+  cat >"$launchctl_output" <<'EOF'
+gui/501/io.github.betocmn.mac-screenshot-filename-sanitizer = {
+  runs = 1
+  last exit code = 1
+}
+EOF
+
+  run env HOME="$home" PREFIX="$prefix" LAUNCHCTL_PRINT_OUTPUT="$launchctl_output" "$SCRIPT" install --dir "$WORK_DIR"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Installed io.github.betocmn.mac-screenshot-filename-sanitizer"* ]]
+  [[ "$output" == *"WARNING: macOS blocked the LaunchAgent from reading $WORK_DIR."* ]]
+  [[ "$output" == *"Grant Full Disk Access to: $prefix/bin/mac-screenshot-filename-sanitizer"* ]]
 }
