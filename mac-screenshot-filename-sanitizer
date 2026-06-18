@@ -19,6 +19,9 @@ DRY_RUN=0
 INCLUDE_RECORDINGS=0
 SETTLE_SECONDS=0
 SETTLE_SECONDS_PROVIDED=0
+SAFE_LOCATION=0
+SET_LOCATION=""
+SCREENSHOT_LOCATION_UPDATED=0
 
 usage() {
   cat <<'EOF'
@@ -38,6 +41,8 @@ Commands:
 
 Global flags:
   --dir <path>             Override the detected screenshot folder
+  --safe-location          Create ~/Screenshots, set macOS screenshots there, and watch it (install only)
+  --set-location <path>    Create path, set macOS screenshots there, and watch it (install only)
   --dry-run                Print intended renames without changing files (run only)
   --include-recordings     Also rename matching .mov/.mp4 screen recordings
   --settle-seconds <n>     Wait before sweeping so screenshot metadata can settle
@@ -145,6 +150,42 @@ selected_dir() {
   else
     detect_screenshot_dir
   fi
+}
+
+default_safe_screenshot_dir() {
+  printf '%s/Screenshots\n' "$HOME"
+}
+
+refresh_screenshot_location() {
+  if command -v killall >/dev/null 2>&1; then
+    killall SystemUIServer >/dev/null 2>&1 || true
+  fi
+}
+
+set_macos_screenshot_location() {
+  local dir
+
+  dir=$1
+  defaults write com.apple.screencapture location "$dir" || die "could not set macOS screenshot location to $dir"
+  refresh_screenshot_location
+}
+
+configured_screenshot_location() {
+  local dir
+
+  if [ "$SAFE_LOCATION" -eq 1 ]; then
+    dir=$(default_safe_screenshot_dir)
+  else
+    dir=$SET_LOCATION
+  fi
+
+  [ -n "$dir" ] || die "screenshot location cannot be empty"
+  dir=$(absolute_path "$dir") || die "could not resolve screenshot location: $dir"
+  mkdir -p "$dir" || die "could not create screenshot folder: $dir"
+  dir=$(absolute_path "$dir") || die "could not resolve screenshot folder: $dir"
+
+  set_macos_screenshot_location "$dir"
+  printf '%s\n' "$dir"
 }
 
 launch_agents_dir() {
@@ -334,7 +375,7 @@ unreadable_directory_message() {
 
   dir=$1
   printf 'could not read directory: %s\n' "$dir" >&2
-  printf 'macOS may be blocking background access to this folder. Grant Full Disk Access to the installed worker or choose another screenshot folder.\n' >&2
+  printf 'macOS may be blocking background access to this folder. Grant Full Disk Access to the installed worker or run: %s install --safe-location\n' "$BINARY_NAME" >&2
 }
 
 background_access_warning() {
@@ -349,7 +390,7 @@ background_access_warning() {
   info "WARNING: macOS blocked the LaunchAgent from reading $dir."
   info "Grant Full Disk Access to: $worker"
   info "Then run: launchctl kickstart -k gui/$uid/$LABEL"
-  info "Alternatively, choose a screenshot folder outside Desktop, Documents, or Downloads and reinstall with --dir."
+  info "Alternatively, run: $BINARY_NAME install --safe-location"
 }
 
 sanitized_name_for() {
@@ -893,7 +934,12 @@ cmd_install() {
   local worker
   local log_file
 
-  dir=$(selected_dir) || die "could not resolve screenshot folder"
+  if [ "$SAFE_LOCATION" -eq 1 ] || [ -n "$SET_LOCATION" ]; then
+    dir=$(configured_screenshot_location)
+    SCREENSHOT_LOCATION_UPDATED=1
+  else
+    dir=$(selected_dir) || die "could not resolve screenshot folder"
+  fi
   [ -d "$dir" ] || die "screenshot folder does not exist: $dir"
 
   mkdir -p "$(launch_agents_dir)" || die "could not create LaunchAgents directory"
@@ -910,7 +956,11 @@ cmd_install() {
   info "Watching: $dir"
   info "Worker: $worker"
   info "Log: $log_file"
-  info "No macOS screenshot settings were changed."
+  if [ "$SCREENSHOT_LOCATION_UPDATED" -eq 1 ]; then
+    info "Set macOS screenshot location: $dir"
+  else
+    info "No macOS screenshot settings were changed."
+  fi
   check_background_access_after_install "$dir" "$worker" "$log_file"
 }
 
@@ -1020,6 +1070,15 @@ parse_args() {
         [ "$#" -gt 0 ] || die "--dir requires a path"
         DIR_OVERRIDE=$1
         ;;
+      --safe-location)
+        SAFE_LOCATION=1
+        ;;
+      --set-location)
+        shift
+        [ "$#" -gt 0 ] || die "--set-location requires a path"
+        [ -n "$1" ] || die "--set-location requires a path"
+        SET_LOCATION=$1
+        ;;
       --dry-run)
         DRY_RUN=1
         ;;
@@ -1056,6 +1115,20 @@ parse_args() {
 
 main() {
   parse_args "$@"
+
+  if [ "$SAFE_LOCATION" -eq 1 ] && [ -n "$SET_LOCATION" ]; then
+    die "--safe-location cannot be combined with --set-location"
+  fi
+  if [ "$SAFE_LOCATION" -eq 1 ] || [ -n "$SET_LOCATION" ]; then
+    case "$COMMAND" in
+      install)
+        ;;
+      *)
+        die "--safe-location and --set-location are only supported by the install command"
+        ;;
+    esac
+    [ -z "$DIR_OVERRIDE" ] || die "--dir cannot be combined with --safe-location or --set-location"
+  fi
 
   if [ "$DRY_RUN" -eq 1 ]; then
     case "$COMMAND" in

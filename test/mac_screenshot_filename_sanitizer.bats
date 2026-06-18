@@ -13,6 +13,12 @@ setup() {
   SLEEP_LOG="$BATS_TEST_TMPDIR/sleep-log"
   : >"$SLEEP_LOG"
   export SLEEP_LOG
+  DEFAULTS_LOG="$BATS_TEST_TMPDIR/defaults-log"
+  : >"$DEFAULTS_LOG"
+  export DEFAULTS_LOG
+  KILLALL_LOG="$BATS_TEST_TMPDIR/killall-log"
+  : >"$KILLALL_LOG"
+  export KILLALL_LOG
 
   cat >"$MOCK_BIN/xattr" <<'EOF'
 #!/usr/bin/env bash
@@ -62,6 +68,30 @@ EOF
 printf '%s\n' "$*" >>"${SLEEP_LOG:?}"
 EOF
 
+  cat >"$MOCK_BIN/defaults" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  read)
+    if [ -n "${DEFAULTS_READ_LOCATION:-}" ]; then
+      printf '%s\n' "$DEFAULTS_READ_LOCATION"
+      exit 0
+    fi
+    exit 1
+    ;;
+  write)
+    printf '%s\n' "$*" >>"${DEFAULTS_LOG:?}"
+    exit 0
+    ;;
+esac
+
+exit 1
+EOF
+
+  cat >"$MOCK_BIN/killall" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${KILLALL_LOG:?}"
+EOF
+
   cat >"$MOCK_BIN/launchctl" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "print" ] && [ -n "${LAUNCHCTL_PRINT_OUTPUT:-}" ]; then
@@ -72,7 +102,7 @@ fi
 exit 0
 EOF
 
-  chmod 0755 "$MOCK_BIN/xattr" "$MOCK_BIN/date" "$MOCK_BIN/mv" "$MOCK_BIN/find" "$MOCK_BIN/sleep" "$MOCK_BIN/launchctl"
+  chmod 0755 "$MOCK_BIN/xattr" "$MOCK_BIN/date" "$MOCK_BIN/mv" "$MOCK_BIN/find" "$MOCK_BIN/sleep" "$MOCK_BIN/defaults" "$MOCK_BIN/killall" "$MOCK_BIN/launchctl"
   PATH="$MOCK_BIN:$PATH"
   export PATH
 }
@@ -318,6 +348,59 @@ mark_screenshot() {
   run "$SCRIPT" uninstall --dry-run
   [ "$status" -ne 0 ]
   [[ "$output" == *"--dry-run is only supported by the run command"* ]]
+}
+
+@test "install safe-location sets macOS screenshots to ~/Screenshots" {
+  home="$WORK_DIR/home"
+  prefix="$WORK_DIR/prefix"
+  safe_dir="$home/Screenshots"
+  plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
+
+  mkdir -p "$home"
+
+  run env HOME="$home" PREFIX="$prefix" MAC_SCREENSHOT_RENAME_SKIP_BACKGROUND_CHECK=1 "$SCRIPT" install --safe-location
+
+  [ "$status" -eq 0 ]
+  [ -d "$safe_dir" ]
+  [ -f "$plist" ]
+  grep -F "write com.apple.screencapture location $safe_dir" "$DEFAULTS_LOG"
+  grep -F "SystemUIServer" "$KILLALL_LOG"
+  grep -F "<string>$safe_dir</string>" "$plist"
+  [[ "$output" == *"Watching: $safe_dir"* ]]
+  [[ "$output" == *"Set macOS screenshot location: $safe_dir"* ]]
+}
+
+@test "install set-location creates and watches a custom screenshot folder" {
+  home="$WORK_DIR/home"
+  prefix="$WORK_DIR/prefix"
+  custom_dir="$WORK_DIR/custom Screenshots"
+  plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
+
+  mkdir -p "$home"
+
+  run env HOME="$home" PREFIX="$prefix" MAC_SCREENSHOT_RENAME_SKIP_BACKGROUND_CHECK=1 "$SCRIPT" install --set-location "$custom_dir"
+
+  [ "$status" -eq 0 ]
+  [ -d "$custom_dir" ]
+  [ -f "$plist" ]
+  grep -F "write com.apple.screencapture location $custom_dir" "$DEFAULTS_LOG"
+  grep -F "<string>$custom_dir</string>" "$plist"
+  [[ "$output" == *"Watching: $custom_dir"* ]]
+  [[ "$output" == *"Set macOS screenshot location: $custom_dir"* ]]
+}
+
+@test "install location-changing flags reject conflicting options" {
+  run "$SCRIPT" install --safe-location --set-location "$WORK_DIR/Screenshots"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--safe-location cannot be combined with --set-location"* ]]
+
+  run "$SCRIPT" install --safe-location --dir "$WORK_DIR"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--dir cannot be combined with --safe-location or --set-location"* ]]
+
+  run "$SCRIPT" status --safe-location
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--safe-location and --set-location are only supported by the install command"* ]]
 }
 
 @test "status reports blocked background access from LaunchAgent logs" {
