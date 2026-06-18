@@ -85,6 +85,10 @@ case "${1:-}" in
     fi
     exit 0
     ;;
+  delete)
+    printf '%s\n' "$*" >>"${DEFAULTS_LOG:?}"
+    exit 0
+    ;;
 esac
 
 exit 1
@@ -417,6 +421,8 @@ mark_screenshot() {
 @test "install safe-location does not change macOS settings when launchd load fails" {
   home="$WORK_DIR/home"
   prefix="$WORK_DIR/prefix"
+  plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
+  worker="$prefix/bin/mac-screenshot-filename-sanitizer"
 
   mkdir -p "$home"
 
@@ -425,6 +431,8 @@ mark_screenshot() {
   [ "$status" -ne 0 ]
   [ ! -s "$DEFAULTS_LOG" ]
   [ ! -s "$KILLALL_LOG" ]
+  [ ! -e "$plist" ]
+  [ ! -e "$worker" ]
   [[ "$output" == *"could not load LaunchAgent"* ]]
 }
 
@@ -432,6 +440,8 @@ mark_screenshot() {
   home="$WORK_DIR/home"
   prefix="$WORK_DIR/prefix"
   safe_dir="$home/Screenshots"
+  plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
+  worker="$prefix/bin/mac-screenshot-filename-sanitizer"
 
   mkdir -p "$home"
 
@@ -439,8 +449,83 @@ mark_screenshot() {
 
   [ "$status" -ne 0 ]
   grep -F "write com.apple.screencapture location $safe_dir" "$DEFAULTS_LOG"
+  [ ! -e "$plist" ]
+  [ ! -e "$worker" ]
   [[ "$output" == *"could not set macOS screenshot location to $safe_dir"* ]]
   [[ "$output" != *"screenshot folder does not exist:"* ]]
+}
+
+@test "install safe-location rolls back previous watcher when smoke check fails" {
+  home="$WORK_DIR/home"
+  prefix="$WORK_DIR/prefix"
+  old_dir="$WORK_DIR/old Screenshots"
+  safe_dir="$home/Screenshots"
+  plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
+  log_file="$home/Library/Logs/io.github.betocmn.mac-screenshot-filename-sanitizer.log"
+  worker="$prefix/bin/mac-screenshot-filename-sanitizer"
+  launchctl_output="$WORK_DIR/launchctl-print"
+
+  mkdir -p "$home" "$old_dir" "${plist%/*}" "${log_file%/*}" "${worker%/*}"
+  printf 'previous worker\n' >"$worker"
+  chmod 0755 "$worker"
+
+  # shellcheck source=/dev/null
+  source "$SCRIPT"
+  write_plist "$plist" "$old_dir" "$worker" "$log_file"
+
+  {
+    printf 'mac-screenshot-filename-sanitizer launchd run started: %s\n' "$safe_dir"
+    printf 'could not read directory: %s\n' "$safe_dir"
+  } >"$log_file"
+  cat >"$launchctl_output" <<'EOF'
+gui/501/io.github.betocmn.mac-screenshot-filename-sanitizer = {
+  runs = 1
+  last exit code = 1
+}
+EOF
+
+  run env HOME="$home" PREFIX="$prefix" DEFAULTS_READ_LOCATION="$old_dir" LAUNCHCTL_PRINT_OUTPUT="$launchctl_output" "$SCRIPT" install --safe-location
+
+  [ "$status" -ne 0 ]
+  grep -F "write com.apple.screencapture location $safe_dir" "$DEFAULTS_LOG"
+  grep -F "write com.apple.screencapture location $old_dir" "$DEFAULTS_LOG"
+  grep -F "<string>$old_dir</string>" "$plist"
+  ! grep -F "<string>$safe_dir</string>" "$plist"
+  grep -F "previous worker" "$worker"
+  [[ "$output" == *"WARNING: macOS blocked the LaunchAgent from reading $safe_dir."* ]]
+  [[ "$output" == *"install failed because the LaunchAgent could not read $safe_dir"* ]]
+  [[ "$output" != *"Installed io.github.betocmn.mac-screenshot-filename-sanitizer"* ]]
+}
+
+@test "install safe-location clears screenshot setting on smoke failure when previously unset" {
+  home="$WORK_DIR/home"
+  prefix="$WORK_DIR/prefix"
+  safe_dir="$home/Screenshots"
+  plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
+  log_file="$home/Library/Logs/io.github.betocmn.mac-screenshot-filename-sanitizer.log"
+  worker="$prefix/bin/mac-screenshot-filename-sanitizer"
+  launchctl_output="$WORK_DIR/launchctl-print"
+
+  mkdir -p "$home" "${log_file%/*}"
+  {
+    printf 'mac-screenshot-filename-sanitizer launchd run started: %s\n' "$safe_dir"
+    printf 'could not read directory: %s\n' "$safe_dir"
+  } >"$log_file"
+  cat >"$launchctl_output" <<'EOF'
+gui/501/io.github.betocmn.mac-screenshot-filename-sanitizer = {
+  runs = 1
+  last exit code = 1
+}
+EOF
+
+  run env HOME="$home" PREFIX="$prefix" LAUNCHCTL_PRINT_OUTPUT="$launchctl_output" "$SCRIPT" install --safe-location
+
+  [ "$status" -ne 0 ]
+  grep -F "write com.apple.screencapture location $safe_dir" "$DEFAULTS_LOG"
+  grep -F "delete com.apple.screencapture location" "$DEFAULTS_LOG"
+  [ ! -e "$plist" ]
+  [ ! -e "$worker" ]
+  [[ "$output" == *"install failed because the LaunchAgent could not read $safe_dir"* ]]
 }
 
 @test "status reports blocked background access from LaunchAgent logs" {
@@ -539,8 +624,9 @@ EOF
   run env HOME="$home" PREFIX="$prefix" LAUNCHCTL_PRINT_OUTPUT="$launchctl_output" "$SCRIPT" install --dir "$WORK_DIR"
 
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Installed io.github.betocmn.mac-screenshot-filename-sanitizer"* ]]
   [[ "$output" == *"WARNING: macOS blocked the LaunchAgent from reading $WORK_DIR."* ]]
   [[ "$output" == *"Grant Full Disk Access to: $prefix/bin/mac-screenshot-filename-sanitizer"* ]]
   [[ "$output" == *"Alternatively, run: \"$prefix/bin/mac-screenshot-filename-sanitizer\" install --safe-location"* ]]
+  [[ "$output" == *"install failed because the LaunchAgent could not read $WORK_DIR"* ]]
+  [[ "$output" != *"Installed io.github.betocmn.mac-screenshot-filename-sanitizer"* ]]
 }
