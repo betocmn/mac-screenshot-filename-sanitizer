@@ -10,6 +10,8 @@ LABEL="io.github.betocmn.mac-screenshot-filename-sanitizer"
 BINARY_NAME="mac-screenshot-filename-sanitizer"
 SCREENSHOT_XATTR="com.apple.metadata:kMDItemIsScreenCapture"
 LAUNCHD_SETTLE_SECONDS=2
+LAUNCHD_INSTALL_CHECK_GRACE_SECONDS=1
+LAUNCHD_LOG_MARKER_PREFIX="$BINARY_NAME launchd run started: "
 
 COMMAND=""
 DIR_OVERRIDE=""
@@ -332,7 +334,22 @@ unreadable_directory_message() {
 
   dir=$1
   printf 'could not read directory: %s\n' "$dir" >&2
-  printf 'If this is Desktop, Documents, or Downloads, macOS may be blocking background access. Grant Full Disk Access to the background worker or choose another screenshot folder.\n' >&2
+  printf 'macOS may be blocking background access to this folder. Grant Full Disk Access to the installed worker or choose another screenshot folder.\n' >&2
+}
+
+background_access_warning() {
+  local dir
+  local worker
+  local uid
+
+  dir=$1
+  worker=$2
+  uid=$(id -u)
+
+  info "WARNING: macOS blocked the LaunchAgent from reading $dir."
+  info "Grant Full Disk Access to: $worker"
+  info "Then run: launchctl kickstart -k gui/$uid/$LABEL"
+  info "Alternatively, choose a screenshot folder outside Desktop, Documents, or Downloads and reinstall with --dir."
 }
 
 sanitized_name_for() {
@@ -620,6 +637,11 @@ write_plist() {
     printf '%s\n' '  </array>'
     printf '%s\n' '  <key>RunAtLoad</key>'
     printf '%s\n' '  <true/>'
+    printf '%s\n' '  <key>EnvironmentVariables</key>'
+    printf '%s\n' '  <dict>'
+    printf '%s\n' '    <key>MAC_SCREENSHOT_RENAME_LAUNCHD_LOG_MARKERS</key>'
+    printf '%s\n' '    <string>1</string>'
+    printf '%s\n' '  </dict>'
     printf '%s\n' '  <key>WatchPaths</key>'
     printf '%s\n' '  <array>'
     printf '    <string>%s</string>\n' "$escaped_watch_dir"
@@ -758,6 +780,113 @@ agent_loaded() {
   launchctl print "$domain/$LABEL" >/dev/null 2>&1 || launchctl list "$LABEL" >/dev/null 2>&1
 }
 
+agent_print() {
+  local domain
+
+  domain=gui/$(id -u)
+  launchctl print "$domain/$LABEL" 2>/dev/null
+}
+
+agent_last_exit_code() {
+  local line
+  local value
+
+  while IFS= read -r line; do
+    case "$line" in
+      *"last exit code ="*)
+        value=${line##*=}
+        read -r value _ <<EOF
+$value
+EOF
+        [ -n "$value" ] || return 1
+        printf '%s\n' "$value"
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+log_has_unreadable_directory() {
+  local log_file
+  local dir
+  local line
+  local unreadable_line
+  local saw_marker
+  local latest_marker_matches
+  local found
+
+  log_file=$1
+  dir=$2
+  unreadable_line="could not read directory: $dir"
+  saw_marker=0
+  latest_marker_matches=0
+  found=0
+
+  [ -f "$log_file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$LAUNCHD_LOG_MARKER_PREFIX"*)
+        saw_marker=1
+        found=0
+        if [ "${line#"$LAUNCHD_LOG_MARKER_PREFIX"}" = "$dir" ]; then
+          latest_marker_matches=1
+        else
+          latest_marker_matches=0
+        fi
+        ;;
+      "$unreadable_line")
+        if [ "$latest_marker_matches" -eq 1 ]; then
+          found=1
+        fi
+        ;;
+    esac
+  done <"$log_file"
+
+  [ "$saw_marker" -eq 1 ] || return 1
+  [ "$found" -eq 1 ]
+}
+
+install_settle_seconds() {
+  if [ "$SETTLE_SECONDS_PROVIDED" -eq 1 ]; then
+    printf '%s\n' "$SETTLE_SECONDS"
+  else
+    printf '%s\n' "$LAUNCHD_SETTLE_SECONDS"
+  fi
+}
+
+check_background_access_after_install() {
+  local dir
+  local worker
+  local log_file
+  local settle_seconds
+  local wait_seconds
+  local launchd_state
+  local last_exit
+
+  dir=$1
+  worker=$2
+  log_file=$3
+  settle_seconds=$(install_settle_seconds)
+  wait_seconds=$((settle_seconds + LAUNCHD_INSTALL_CHECK_GRACE_SECONDS))
+
+  if [ "${MAC_SCREENSHOT_RENAME_SKIP_BACKGROUND_CHECK:-0}" = "1" ]; then
+    return 0
+  fi
+
+  if [ "$wait_seconds" -gt 0 ]; then
+    sleep "$wait_seconds"
+  fi
+
+  launchd_state=$(agent_print) || return 0
+  last_exit=$(printf '%s\n' "$launchd_state" | agent_last_exit_code) || return 0
+  if [ "$last_exit" != "0" ] && log_has_unreadable_directory "$log_file" "$dir"; then
+    background_access_warning "$dir" "$worker"
+    return 1
+  fi
+}
+
 cmd_install() {
   local dir
   local plist
@@ -782,6 +911,7 @@ cmd_install() {
   info "Worker: $worker"
   info "Log: $log_file"
   info "No macOS screenshot settings were changed."
+  check_background_access_after_install "$dir" "$worker" "$log_file"
 }
 
 cmd_uninstall() {
@@ -809,20 +939,41 @@ cmd_status() {
   local watched
   local loaded
   local dirty_count
+  local worker
+  local last_exit
+  local launchd_state
+  local background_access
 
   detected=$(selected_dir) || die "could not resolve screenshot folder"
   plist=$(plist_path)
   watched="not installed"
   loaded=no
+  worker=$(installed_binary_path)
+  last_exit=unknown
+  background_access=unknown
 
   if watched=$(read_plist_watch_path "$plist"); then
     :
   else
     watched="not installed"
   fi
+  if worker=$(read_plist_worker_path "$plist"); then
+    :
+  else
+    worker=$(installed_binary_path)
+  fi
 
   if agent_loaded; then
     loaded=yes
+    if launchd_state=$(agent_print) && last_exit=$(printf '%s\n' "$launchd_state" | agent_last_exit_code); then
+      if [ "$last_exit" = "0" ]; then
+        background_access=ok
+      elif [ "$watched" != "not installed" ] && log_has_unreadable_directory "$(log_path)" "$watched"; then
+        background_access=blocked
+      else
+        background_access="failed (last exit code $last_exit)"
+      fi
+    fi
   fi
 
   dirty_count=$(count_dirty_screenshots "$detected")
@@ -830,10 +981,15 @@ cmd_status() {
   info "Detected screenshot folder: $detected"
   info "LaunchAgent watched folder: $watched"
   info "LaunchAgent loaded: $loaded"
+  info "LaunchAgent last exit code: $last_exit"
+  info "LaunchAgent background access: $background_access"
   info "Dirty screenshots in detected folder: $dirty_count"
 
   if [ "$watched" != "not installed" ] && [ "$detected" != "$watched" ]; then
     info "WARNING: detected folder does not match the installed watcher. Re-run install."
+  fi
+  if [ "$background_access" = "blocked" ]; then
+    background_access_warning "$watched" "$worker"
   fi
 }
 
@@ -841,6 +997,9 @@ cmd_run() {
   local dir
 
   dir=$(selected_dir) || die "could not resolve screenshot folder"
+  if [ "${MAC_SCREENSHOT_RENAME_LAUNCHD_LOG_MARKERS:-0}" = "1" ]; then
+    printf '%s%s\n' "$LAUNCHD_LOG_MARKER_PREFIX" "$dir" >&2
+  fi
   settle_before_run
   run_sweep "$dir"
 }
