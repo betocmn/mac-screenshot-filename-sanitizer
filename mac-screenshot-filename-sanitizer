@@ -983,6 +983,7 @@ check_background_access_after_install() {
   local dir
   local worker
   local log_file
+  local warn
   local settle_seconds
   local wait_seconds
   local launchd_state
@@ -991,6 +992,7 @@ check_background_access_after_install() {
   dir=$1
   worker=$2
   log_file=$3
+  warn=${4:-1}
   settle_seconds=$(install_settle_seconds)
   wait_seconds=$((settle_seconds + LAUNCHD_INSTALL_CHECK_GRACE_SECONDS))
 
@@ -1005,7 +1007,9 @@ check_background_access_after_install() {
   launchd_state=$(agent_print) || return 0
   last_exit=$(printf '%s\n' "$launchd_state" | agent_last_exit_code) || return 0
   if [ "$last_exit" != "0" ] && log_has_unreadable_directory "$log_file" "$dir"; then
-    background_access_warning "$dir" "$worker"
+    if [ "$warn" -eq 1 ]; then
+      background_access_warning "$dir" "$worker"
+    fi
     return 1
   fi
 }
@@ -1096,10 +1100,25 @@ cmd_install() {
     SCREENSHOT_LOCATION_UPDATED=1
   fi
 
-  if ! check_background_access_after_install "$dir" "$worker" "$log_file"; then
+  if [ "$update_screenshot_location" -eq 0 ]; then
+    [ -z "$previous_plist_backup" ] || rm -f "$previous_plist_backup"
+    [ -z "$previous_worker_backup" ] || rm -f "$previous_worker_backup"
+
+    info "Installed $LABEL"
+    info "Watching: $dir"
+    info "Worker: $worker"
+    info "Log: $log_file"
+    info "No macOS screenshot settings were changed."
+    check_background_access_after_install "$dir" "$worker" "$log_file"
+    return $?
+  fi
+
+  if ! check_background_access_after_install "$dir" "$worker" "$log_file" 0; then
     rollback_install_changes "$plist" "$previous_plist_backup" "$previous_plist_exists" "$previous_agent_loaded" "$worker" "$previous_worker_backup" "$previous_worker_exists" "$previous_screenshot_location_set" "$previous_screenshot_location" "$screenshot_location_changed" || printf 'warning: rollback may be incomplete\n' >&2
     [ -z "$previous_plist_backup" ] || rm -f "$previous_plist_backup"
     [ -z "$previous_worker_backup" ] || rm -f "$previous_worker_backup"
+    info "WARNING: macOS blocked the LaunchAgent from reading $dir."
+    info "Rolled back the attempted install; previous watcher state and screenshot location were restored."
     die "install failed because the LaunchAgent could not read $dir"
   fi
 

@@ -493,7 +493,10 @@ EOF
   ! grep -F "<string>$safe_dir</string>" "$plist"
   grep -F "previous worker" "$worker"
   [[ "$output" == *"WARNING: macOS blocked the LaunchAgent from reading $safe_dir."* ]]
+  [[ "$output" == *"Rolled back the attempted install; previous watcher state and screenshot location were restored."* ]]
   [[ "$output" == *"install failed because the LaunchAgent could not read $safe_dir"* ]]
+  [[ "$output" != *"Then run: launchctl kickstart"* ]]
+  [[ "$output" != *"Alternatively, run:"* ]]
   [[ "$output" != *"Installed io.github.betocmn.mac-screenshot-filename-sanitizer"* ]]
 }
 
@@ -525,7 +528,11 @@ EOF
   grep -F "delete com.apple.screencapture location" "$DEFAULTS_LOG"
   [ ! -e "$plist" ]
   [ ! -e "$worker" ]
+  [[ "$output" == *"WARNING: macOS blocked the LaunchAgent from reading $safe_dir."* ]]
+  [[ "$output" == *"Rolled back the attempted install; previous watcher state and screenshot location were restored."* ]]
   [[ "$output" == *"install failed because the LaunchAgent could not read $safe_dir"* ]]
+  [[ "$output" != *"Then run: launchctl kickstart"* ]]
+  [[ "$output" != *"Alternatively, run:"* ]]
 }
 
 @test "status reports blocked background access from LaunchAgent logs" {
@@ -606,6 +613,8 @@ EOF
 @test "install warns when the launchd smoke check cannot read the watched folder" {
   home="$WORK_DIR/home"
   prefix="$WORK_DIR/prefix"
+  plist="$home/Library/LaunchAgents/io.github.betocmn.mac-screenshot-filename-sanitizer.plist"
+  worker="$prefix/bin/mac-screenshot-filename-sanitizer"
   log_file="$home/Library/Logs/io.github.betocmn.mac-screenshot-filename-sanitizer.log"
   launchctl_output="$WORK_DIR/launchctl-print"
 
@@ -624,9 +633,13 @@ EOF
   run env HOME="$home" PREFIX="$prefix" LAUNCHCTL_PRINT_OUTPUT="$launchctl_output" "$SCRIPT" install --dir "$WORK_DIR"
 
   [ "$status" -ne 0 ]
+  [ -f "$plist" ]
+  [ -x "$worker" ]
+  grep -F "<string>$WORK_DIR</string>" "$plist"
+  [[ "$output" == *"Installed io.github.betocmn.mac-screenshot-filename-sanitizer"* ]]
   [[ "$output" == *"WARNING: macOS blocked the LaunchAgent from reading $WORK_DIR."* ]]
   [[ "$output" == *"Grant Full Disk Access to: $prefix/bin/mac-screenshot-filename-sanitizer"* ]]
   [[ "$output" == *"Alternatively, run: \"$prefix/bin/mac-screenshot-filename-sanitizer\" install --safe-location"* ]]
-  [[ "$output" == *"install failed because the LaunchAgent could not read $WORK_DIR"* ]]
-  [[ "$output" != *"Installed io.github.betocmn.mac-screenshot-filename-sanitizer"* ]]
+  [[ "$output" != *"Rolled back the attempted install"* ]]
+  [[ "$output" != *"install failed because the LaunchAgent could not read $WORK_DIR"* ]]
 }
