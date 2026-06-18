@@ -65,8 +65,14 @@ download_worker() {
   url=$1
   tmp=$2
 
-  command -v curl >/dev/null 2>&1 || die "curl is required when installing without a local clone"
-  curl -fsSL "$url" -o "$tmp" || die "could not download $url"
+  command -v curl >/dev/null 2>&1 || {
+    printf 'error: curl is required when installing without a local clone\n' >&2
+    return 1
+  }
+  curl -fsSL "$url" -o "$tmp" || {
+    printf 'error: could not download %s\n' "$url" >&2
+    return 1
+  }
 }
 
 prepare_downloaded_worker() {
@@ -77,9 +83,19 @@ prepare_downloaded_worker() {
   bin_dir=$1
   url=$2
 
-  tmp=$(mktemp "$bin_dir/$BINARY_NAME.installer.XXXXXX") || die "could not create temporary worker"
-  download_worker "$url" "$tmp"
-  chmod 0755 "$tmp" || die "could not chmod $tmp"
+  tmp=$(mktemp "$bin_dir/$BINARY_NAME.installer.XXXXXX") || {
+    printf 'error: could not create temporary worker\n' >&2
+    return 1
+  }
+  if ! download_worker "$url" "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! chmod 0755 "$tmp"; then
+    printf 'error: could not chmod %s\n' "$tmp" >&2
+    rm -f "$tmp"
+    return 1
+  fi
   printf '%s\n' "$tmp"
 }
 
@@ -107,7 +123,7 @@ main() {
   if worker=$(local_worker_source); then
     :
   else
-    worker=$(prepare_downloaded_worker "$bin_dir" "$url")
+    worker=$(prepare_downloaded_worker "$bin_dir" "$url") || return $?
     worker_is_temp=1
   fi
 

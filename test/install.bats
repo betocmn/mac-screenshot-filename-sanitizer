@@ -36,6 +36,9 @@ done
 
 [ -n "$out" ] || exit 1
 printf '%s\n' "$url" >"${CURL_URL_LOG:?}"
+if [ "${FAIL_CURL:-0}" = "1" ]; then
+  exit 7
+fi
 cat >"$out" <<'WORKER'
 #!/usr/bin/env bash
 printf 'downloaded worker: %s\n' "$*"
@@ -157,4 +160,20 @@ EOF
   grep -F "previous worker" "$previous_worker"
   ! grep -F "SCREENSHOT_XATTR" "$previous_worker"
   [[ "$output" == *"could not set macOS screenshot location to $safe_dir"* ]]
+}
+
+@test "standalone installer stops cleanly when worker download fails" {
+  clone="$WORK_DIR/standalone"
+  mkdir -p "$clone"
+  cp "$INSTALLER" "$clone/install.sh"
+  chmod 0755 "$clone/install.sh"
+
+  run env HOME="$HOME_DIR" PREFIX="$PREFIX_DIR" MAC_SCREENSHOT_RENAME_URL="https://example.invalid/worker" FAIL_CURL=1 PATH="$MOCK_BIN:$PATH" \
+    bash "$clone/install.sh"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not download https://example.invalid/worker"* ]]
+  [[ "$output" != *"command not found"* ]]
+  [ -z "$(find "$PREFIX_DIR/bin" -type f -name 'mac-screenshot-filename-sanitizer.installer.*' -print -quit)" ]
+  [ ! -e "$PREFIX_DIR/bin/mac-screenshot-filename-sanitizer" ]
 }
